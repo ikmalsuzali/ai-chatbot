@@ -9,12 +9,17 @@ import {
   primaryKey,
   foreignKey,
   boolean,
+  integer,
 } from 'drizzle-orm/pg-core';
 
 export const user = pgTable('User', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
-  email: varchar('email', { length: 64 }).notNull(),
-  password: varchar('password', { length: 64 }),
+  email: varchar('email', { length: 256 }).unique().notNull(),
+  password: varchar('password', { length: 256 }),
+  stripeCustomerId: varchar('stripeCustomerId', { length: 256 }),
+  stripeSubscriptionId: varchar('stripeSubscriptionId', { length: 256 }),
+  subscriptionStatus: varchar('subscriptionStatus', { length: 256 }),
+  currentPeriodEnd: timestamp('currentPeriodEnd'),
 });
 
 export type User = InferSelectModel<typeof user>;
@@ -113,3 +118,27 @@ export const suggestion = pgTable(
 );
 
 export type Suggestion = InferSelectModel<typeof suggestion>;
+
+export const questionnaireQuestion = pgTable('questionnaire_question', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  question: text('question').notNull(),
+  key: varchar('key', { length: 64 }).notNull().unique(),
+  placeholder: text('placeholder'),
+  order: integer('order').notNull(),
+  isRequired: boolean('is_required').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type QuestionnaireQuestion = typeof questionnaireQuestion.$inferSelect;
+
+export const userQuestionnaireAnswer = pgTable('user_questionnaire_answer', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  questionId: uuid('question_id').notNull().references(() => questionnaireQuestion.id, { onDelete: 'cascade' }),
+  answer: text('answer').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type UserQuestionnaireAnswer = typeof userQuestionnaireAnswer.$inferSelect;

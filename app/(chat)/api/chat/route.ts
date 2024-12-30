@@ -1,15 +1,14 @@
-import {
-  type Message,
-  convertToCoreMessages,
-  createDataStreamResponse,
-  streamObject,
-  streamText,
-} from 'ai';
+import { ChatMessage, HumanMessage, AIMessage, SystemMessage } from '@langchain/core/messages';
+import { StringOutputParser } from '@langchain/core/output_parsers';
+import { RunnableSequence } from '@langchain/core/runnables';
+import { StructuredTool } from '@langchain/core/tools';
+import { ChatOpenAI } from '@langchain/openai';
+import { BufferMemory } from 'langchain/memory';
 import { z } from 'zod';
 
 import { auth } from '@/app/(auth)/auth';
-import { customModel } from '@/lib/ai';
 import { models } from '@/lib/ai/models';
+import { DocumentManager } from '@/lib/ai/document-store';
 import {
   codePrompt,
   systemPrompt,
@@ -23,23 +22,17 @@ import {
   saveDocument,
   saveMessages,
   saveSuggestions,
+  getUserQuestionnaire,
+  getQuestionnaireQuestions,
+  getUserQuestionnaireAnswers,
 } from '@/lib/db/queries';
-import type { Suggestion } from '@/lib/db/schema';
-import {
-  generateUUID,
-  getMostRecentUserMessage,
-  sanitizeResponseMessages,
-} from '@/lib/utils';
-
+import { generateUUID } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
 
 export const maxDuration = 60;
 
-type AllowedTools =
-  | 'createDocument'
-  | 'updateDocument'
-  | 'requestSuggestions'
-  | 'getWeather';
+// Define tool types and arrays similar to before
+type AllowedTools = 'createDocument' | 'updateDocument' | 'requestSuggestions' | 'getWeather';
 
 const blocksTools: AllowedTools[] = [
   'createDocument',
@@ -51,17 +44,25 @@ const weatherTools: AllowedTools[] = ['getWeather'];
 
 const allTools: AllowedTools[] = [...blocksTools, ...weatherTools];
 
+// Create a memory store for each chat
+const chatMemories = new Map<string, BufferMemory>();
+
+function getChatMemory(chatId: string) {
+  if (!chatMemories.has(chatId)) {
+    chatMemories.set(chatId, new BufferMemory({
+      returnMessages: true,
+      memoryKey: "chat_history",
+    }));
+  }
+  return chatMemories.get(chatId)!;
+}
+
 export async function POST(request: Request) {
-  const {
-    id,
-    messages,
-    modelId,
-  }: { id: string; messages: Array<Message>; modelId: string } =
-    await request.json();
+  const { id, messages, modelId } = await request.json();
 
   const session = await auth();
 
-  if (!session || !session.user || !session.user.id) {
+  if (!session?.user?.id) {
     return new Response('Unauthorized', { status: 401 });
   }
 
@@ -71,385 +72,270 @@ export async function POST(request: Request) {
     return new Response('Model not found', { status: 404 });
   }
 
-  const coreMessages = convertToCoreMessages(messages);
-  const userMessage = getMostRecentUserMessage(coreMessages);
-
-  if (!userMessage) {
-    return new Response('No user message found', { status: 400 });
-  }
+  // Convert messages to LangChain format
+  const langChainMessages = messages.map(msg => {
+    if (msg.role === 'user') return new HumanMessage(msg.content);
+    if (msg.role === 'assistant') return new AIMessage(msg.content);
+    return new SystemMessage(msg.content);
+  });
 
   const chat = await getChatById({ id });
 
   if (!chat) {
-    const title = await generateTitleFromUserMessage({ message: userMessage });
+    const title = await generateTitleFromUserMessage({ 
+      message: messages[messages.length - 1] 
+    });
     await saveChat({ id, userId: session.user.id, title });
   }
 
   const userMessageId = generateUUID();
+  const lastUserMessage = messages[messages.length - 1];
 
   await saveMessages({
     messages: [
-      { ...userMessage, id: userMessageId, createdAt: new Date(), chatId: id },
+      { 
+        ...lastUserMessage, 
+        id: userMessageId, 
+        createdAt: new Date(), 
+        chatId: id 
+      },
     ],
   });
 
-  return createDataStreamResponse({
-    execute: (dataStream) => {
-      dataStream.writeData({
-        type: 'user-message-id',
-        content: userMessageId,
-      });
+  const memory = getChatMemory(id);
+  const documentManager = DocumentManager.getInstance();
 
-      const result = streamText({
-        model: customModel(model.apiIdentifier),
-        system: systemPrompt,
-        messages: coreMessages,
-        maxSteps: 5,
-        experimental_activeTools: allTools,
-        tools: {
-          getWeather: {
-            description: 'Get the current weather at a location',
-            parameters: z.object({
-              latitude: z.number(),
-              longitude: z.number(),
-            }),
-            execute: async ({ latitude, longitude }) => {
-              const response = await fetch(
-                `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m&hourly=temperature_2m&daily=sunrise,sunset&timezone=auto`,
-              );
+  // Enhanced tools with document integration
+  const tools = [
+    new StructuredTool({
+      name: 'searchDocuments',
+      description: 'Search through existing documents for relevant information',
+      schema: z.object({
+        query: z.string()
+      }),
+      func: async ({ query }) => {
+        const { documents } = await documentManager.queryDocuments(query, id);
+        return documents.map(doc => ({
+          content: doc.pageContent,
+          metadata: doc.metadata
+        }));
+      }
+    }),
 
-              const weatherData = await response.json();
-              return weatherData;
-            },
-          },
-          createDocument: {
-            description:
-              'Create a document for a writing activity. This tool will call other functions that will generate the contents of the document based on the title and kind.',
-            parameters: z.object({
-              title: z.string(),
-              kind: z.enum(['text', 'code']),
-            }),
-            execute: async ({ title, kind }) => {
-              const id = generateUUID();
-              let draftText = '';
+    new StructuredTool({
+      name: 'createDocument',
+      description: 'Create a document for a writing activity',
+      schema: z.object({
+        title: z.string(),
+        kind: z.enum(['text', 'code']),
+        content: z.string()
+      }),
+      func: async ({ title, kind, content }) => {
+        const docId = generateUUID();
+        
+        // Save to vector store for future retrieval
+        await documentManager.addDocument(content, {
+          id: docId,
+          title,
+          kind,
+          createdAt: new Date().toISOString()
+        });
 
-              dataStream.writeData({
-                type: 'id',
-                content: id,
-              });
+        // Save to database
+        if (session.user?.id) {
+          await saveDocument({
+            id: docId,
+            title,
+            kind,
+            content,
+            userId: session.user.id
+          });
+        }
 
-              dataStream.writeData({
-                type: 'title',
-                content: title,
-              });
+        return { id: docId, title, kind };
+      }
+    }),
 
-              dataStream.writeData({
-                type: 'kind',
-                content: kind,
-              });
+    new StructuredTool({
+      name: 'updateDocument',
+      description: 'Update an existing document',
+      schema: z.object({
+        id: z.string(),
+        content: z.string(),
+        description: z.string()
+      }),
+      func: async ({ id, content, description }) => {
+        const document = await getDocumentById({ id });
+        if (!document) {
+          throw new Error('Document not found');
+        }
 
-              dataStream.writeData({
-                type: 'clear',
-                content: '',
-              });
+        // Update vector store
+        await documentManager.addDocument(content, {
+          id,
+          title: document.title,
+          kind: document.kind,
+          updatedAt: new Date().toISOString()
+        });
 
-              if (kind === 'text') {
-                const { fullStream } = streamText({
-                  model: customModel(model.apiIdentifier),
-                  system:
-                    'Write about the given topic. Markdown is supported. Use headings wherever appropriate.',
-                  prompt: title,
-                });
+        // Update database
+        await saveDocument({
+          id,
+          title: document.title,
+          kind: document.kind,
+          content,
+          userId: session.user.id!
+        });
 
-                for await (const delta of fullStream) {
-                  const { type } = delta;
+        return {
+          id,
+          title: document.title,
+          message: `Document updated: ${description}`
+        };
+      }
+    }),
+  ];
 
-                  if (type === 'text-delta') {
-                    const { textDelta } = delta;
+  // Create streaming response
+  const encoder = new TextEncoder();
+  const stream = new TransformStream();
+  const writer = stream.writable.getWriter();
 
-                    draftText += textDelta;
-                    dataStream.writeData({
-                      type: 'text-delta',
-                      content: textDelta,
-                    });
-                  }
-                }
-
-                dataStream.writeData({ type: 'finish', content: '' });
-              } else if (kind === 'code') {
-                const { fullStream } = streamObject({
-                  model: customModel(model.apiIdentifier),
-                  system: codePrompt,
-                  prompt: title,
-                  schema: z.object({
-                    code: z.string(),
-                  }),
-                });
-
-                for await (const delta of fullStream) {
-                  const { type } = delta;
-
-                  if (type === 'object') {
-                    const { object } = delta;
-                    const { code } = object;
-
-                    if (code) {
-                      dataStream.writeData({
-                        type: 'code-delta',
-                        content: code ?? '',
-                      });
-
-                      draftText = code;
-                    }
-                  }
-                }
-
-                dataStream.writeData({ type: 'finish', content: '' });
-              }
-
-              if (session.user?.id) {
-                await saveDocument({
-                  id,
-                  title,
-                  kind,
-                  content: draftText,
-                  userId: session.user.id,
-                });
-              }
-
-              return {
-                id,
-                title,
-                kind,
-                content:
-                  'A document was created and is now visible to the user.',
-              };
-            },
-          },
-          updateDocument: {
-            description: 'Update a document with the given description.',
-            parameters: z.object({
-              id: z.string().describe('The ID of the document to update'),
-              description: z
-                .string()
-                .describe('The description of changes that need to be made'),
-            }),
-            execute: async ({ id, description }) => {
-              const document = await getDocumentById({ id });
-
-              if (!document) {
-                return {
-                  error: 'Document not found',
-                };
-              }
-
-              const { content: currentContent } = document;
-              let draftText = '';
-
-              dataStream.writeData({
-                type: 'clear',
-                content: document.title,
-              });
-
-              if (document.kind === 'text') {
-                const { fullStream } = streamText({
-                  model: customModel(model.apiIdentifier),
-                  system: updateDocumentPrompt(currentContent),
-                  prompt: description,
-                  experimental_providerMetadata: {
-                    openai: {
-                      prediction: {
-                        type: 'content',
-                        content: currentContent,
-                      },
-                    },
-                  },
-                });
-
-                for await (const delta of fullStream) {
-                  const { type } = delta;
-
-                  if (type === 'text-delta') {
-                    const { textDelta } = delta;
-
-                    draftText += textDelta;
-                    dataStream.writeData({
-                      type: 'text-delta',
-                      content: textDelta,
-                    });
-                  }
-                }
-
-                dataStream.writeData({ type: 'finish', content: '' });
-              } else if (document.kind === 'code') {
-                const { fullStream } = streamObject({
-                  model: customModel(model.apiIdentifier),
-                  system: updateDocumentPrompt(currentContent),
-                  prompt: description,
-                  schema: z.object({
-                    code: z.string(),
-                  }),
-                });
-
-                for await (const delta of fullStream) {
-                  const { type } = delta;
-
-                  if (type === 'object') {
-                    const { object } = delta;
-                    const { code } = object;
-
-                    if (code) {
-                      dataStream.writeData({
-                        type: 'code-delta',
-                        content: code ?? '',
-                      });
-
-                      draftText = code;
-                    }
-                  }
-                }
-
-                dataStream.writeData({ type: 'finish', content: '' });
-              }
-
-              if (session.user?.id) {
-                await saveDocument({
-                  id,
-                  title: document.title,
-                  content: draftText,
-                  kind: document.kind,
-                  userId: session.user.id,
-                });
-              }
-
-              return {
-                id,
-                title: document.title,
-                kind: document.kind,
-                content: 'The document has been updated successfully.',
-              };
-            },
-          },
-          requestSuggestions: {
-            description: 'Request suggestions for a document',
-            parameters: z.object({
-              documentId: z
-                .string()
-                .describe('The ID of the document to request edits'),
-            }),
-            execute: async ({ documentId }) => {
-              const document = await getDocumentById({ id: documentId });
-
-              if (!document || !document.content) {
-                return {
-                  error: 'Document not found',
-                };
-              }
-
-              const suggestions: Array<
-                Omit<Suggestion, 'userId' | 'createdAt' | 'documentCreatedAt'>
-              > = [];
-
-              const { elementStream } = streamObject({
-                model: customModel(model.apiIdentifier),
-                system:
-                  'You are a help writing assistant. Given a piece of writing, please offer suggestions to improve the piece of writing and describe the change. It is very important for the edits to contain full sentences instead of just words. Max 5 suggestions.',
-                prompt: document.content,
-                output: 'array',
-                schema: z.object({
-                  originalSentence: z
-                    .string()
-                    .describe('The original sentence'),
-                  suggestedSentence: z
-                    .string()
-                    .describe('The suggested sentence'),
-                  description: z
-                    .string()
-                    .describe('The description of the suggestion'),
-                }),
-              });
-
-              for await (const element of elementStream) {
-                const suggestion = {
-                  originalText: element.originalSentence,
-                  suggestedText: element.suggestedSentence,
-                  description: element.description,
-                  id: generateUUID(),
-                  documentId: documentId,
-                  isResolved: false,
-                };
-
-                dataStream.writeData({
-                  type: 'suggestion',
-                  content: suggestion,
-                });
-
-                suggestions.push(suggestion);
-              }
-
-              if (session.user?.id) {
-                const userId = session.user.id;
-
-                await saveSuggestions({
-                  suggestions: suggestions.map((suggestion) => ({
-                    ...suggestion,
-                    userId,
-                    createdAt: new Date(),
-                    documentCreatedAt: document.createdAt,
-                  })),
-                });
-              }
-
-              return {
-                id: documentId,
-                title: document.title,
-                kind: document.kind,
-                message: 'Suggestions have been added to the document',
-              };
-            },
-          },
-        },
-        onFinish: async ({ response }) => {
-          if (session.user?.id) {
-            try {
-              const responseMessagesWithoutIncompleteToolCalls =
-                sanitizeResponseMessages(response.messages);
-
-              await saveMessages({
-                messages: responseMessagesWithoutIncompleteToolCalls.map(
-                  (message) => {
-                    const messageId = generateUUID();
-
-                    if (message.role === 'assistant') {
-                      dataStream.writeMessageAnnotation({
-                        messageIdFromServer: messageId,
-                      });
-                    }
-
-                    return {
-                      id: messageId,
-                      chatId: id,
-                      role: message.role,
-                      content: message.content,
-                      createdAt: new Date(),
-                    };
-                  },
-                ),
-              });
-            } catch (error) {
-              console.error('Failed to save chat');
-            }
-          }
-        },
-        experimental_telemetry: {
-          isEnabled: true,
-          functionId: 'stream-text',
-        },
-      });
-
-      result.mergeIntoDataStream(dataStream);
-    },
+  // Initialize chat model with memory
+  const chatModel = new ChatOpenAI({
+    modelName: model.apiIdentifier,
+    streaming: true,
+    callbacks: [{
+      handleLLMNewToken(token) {
+        writer.write(encoder.encode(`data: ${JSON.stringify({
+          type: 'text-delta',
+          content: token
+        })}\n\n`));
+      }
+    }]
   });
+
+  // Create a more sophisticated chain with memory
+  const chain = RunnableSequence.from([
+    {
+      memory: async (input) => {
+        const history = await memory.loadMemoryVariables({});
+        return [...history.chat_history, new HumanMessage(input.message)];
+      },
+      tools: async () => tools,
+      systemMessage: async () => {
+        let systemMessageContent = systemPrompt;
+        
+        if (session?.user?.id) {
+          const [questions, answers] = await Promise.all([
+            getQuestionnaireQuestions(),
+            getUserQuestionnaireAnswers(session.user.id),
+          ]);
+
+          if (questions.length > 0 && Object.keys(answers).length > 0) {
+            systemMessageContent = `${systemMessageContent}\n\nUser Context:`;
+            questions.forEach(question => {
+              if (answers[question.key]) {
+                systemMessageContent += `\n- ${question.question}: ${answers[question.key]}`;
+              }
+            });
+          }
+        }
+        
+        return new SystemMessage(systemMessageContent);
+      },
+      context: async (input) => {
+        // Get relevant context and QA history
+        const { documents, relevantQAs } = await documentManager.queryDocuments(
+          input.message,
+          id
+        );
+        
+        return {
+          documents,
+          relevantQAs,
+          contextText: documents.map(doc => doc.pageContent).join('\n\n')
+        };
+      }
+    },
+    async (input) => {
+      const response = await chatModel.invoke({
+        messages: [
+          input.systemMessage,
+          // Include relevant context in the prompt
+          new SystemMessage(`Relevant context:\n${input.context.contextText}\n\nRelevant previous QA:\n${
+            input.context.relevantQAs.map(qa => 
+              `Q: ${qa.question}\nA: ${qa.answer}\n`
+            ).join('\n')
+          }`),
+          ...input.memory,
+        ],
+        tools: input.tools
+      });
+
+      // Verify and track the answer
+      const verificationResult = await documentManager.verifyAndTrackAnswer(
+        id,
+        input.memory[input.memory.length - 1].content,
+        response.content,
+        input.context.contextText,
+        {
+          modelId,
+          documents: input.context.documents.map(doc => doc.metadata)
+        }
+      );
+
+      // If the answer is not accurate, append a correction
+      if (!verificationResult.verification.isAccurate) {
+        response.content += `\n\nNote: I need to correct my previous statement. ${verificationResult.verification.explanation}`;
+      }
+
+      // Save to memory
+      await memory.saveContext(
+        { input: input.memory[input.memory.length - 1].content },
+        { output: response.content }
+      );
+
+      return response;
+    },
+    new StringOutputParser()
+  ]);
+
+  try {
+    const lastMessage = messages[messages.length - 1];
+    const response = await chain.invoke({
+      message: lastMessage.content
+    });
+
+    // Save response message
+    if (session.user?.id) {
+      const messageId = generateUUID();
+      await saveMessages({
+        messages: [{
+          id: messageId,
+          chatId: id,
+          role: 'assistant',
+          content: response,
+          createdAt: new Date()
+        }]
+      });
+    }
+
+    writer.write(encoder.encode('data: [DONE]\n\n'));
+    await writer.close();
+
+    return new Response(stream.readable, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
+
+  } catch (error) {
+    console.error('Error in chat processing:', error);
+    return new Response('Error processing chat', { status: 500 });
+  }
 }
 
 export async function DELETE(request: Request) {

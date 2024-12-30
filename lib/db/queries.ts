@@ -4,6 +4,7 @@ import { genSaltSync, hashSync } from 'bcrypt-ts';
 import { and, asc, desc, eq, gt, gte } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+import { stripe } from '@/lib/stripe';
 
 import {
   user,
@@ -15,6 +16,8 @@ import {
   type Message,
   message,
   vote,
+  questionnaireQuestion,
+  userQuestionnaireAnswer,
 } from './schema';
 import { BlockKind } from '@/components/block';
 
@@ -327,4 +330,188 @@ export async function updateChatVisiblityById({
     console.error('Failed to update chat visibility in database');
     throw error;
   }
+}
+
+export async function getUserSubscription(userId: string) {
+  return await db.query.user.findFirst({
+    where: eq(user.id, userId),
+    columns: {
+      stripeCustomerId: true,
+      stripeSubscriptionId: true,
+      subscriptionStatus: true,
+      currentPeriodEnd: true,
+    },
+  });
+}
+
+export async function updateUserSubscription(
+  userId: string,
+  subscriptionId: string,
+  status: string,
+  periodEnd: Date
+) {
+  return await db
+    .update(user)
+    .set({
+      stripeSubscriptionId: subscriptionId,
+      subscriptionStatus: status,
+      currentPeriodEnd: periodEnd,
+    })
+    .where(eq(user.id, userId));
+}
+
+export async function getUserQuestionnaire(userId: string) {
+  try {
+    return await db
+      .select()
+      .from(userQuestionnaire)
+      .where(eq(userQuestionnaire.userId, userId))
+      .limit(1);
+  } catch (error) {
+    console.error('Failed to get user questionnaire from database');
+    throw error;
+  }
+}
+
+export async function createUserQuestionnaire(
+  userId: string,
+  data: {
+    purpose: string;
+    expertise: string;
+    interests: string;
+    preferredStyle: string;
+  },
+) {
+  try {
+    return await db.insert(userQuestionnaire).values({
+      userId,
+      ...data,
+    });
+  } catch (error) {
+    console.error('Failed to create user questionnaire in database');
+    throw error;
+  }
+}
+
+export async function updateUserQuestionnaire(
+  userId: string,
+  data: {
+    purpose: string;
+    expertise: string;
+    interests: string;
+    preferredStyle: string;
+  },
+) {
+  try {
+    return await db
+      .update(userQuestionnaire)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      })
+      .where(eq(userQuestionnaire.userId, userId));
+  } catch (error) {
+    console.error('Failed to update user questionnaire in database');
+    throw error;
+  }
+}
+
+export async function getQuestionnaireQuestions() {
+  try {
+    return await db
+      .select()
+      .from(questionnaireQuestion)
+      .orderBy(asc(questionnaireQuestion.order));
+  } catch (error) {
+    console.error('Failed to get questionnaire questions from database');
+    throw error;
+  }
+}
+
+export async function getUserQuestionnaireAnswers(userId: string) {
+  try {
+    const answers = await db
+      .select({
+        questionId: userQuestionnaireAnswer.questionId,
+        answer: userQuestionnaireAnswer.answer,
+        question: questionnaireQuestion.question,
+        key: questionnaireQuestion.key,
+      })
+      .from(userQuestionnaireAnswer)
+      .innerJoin(
+        questionnaireQuestion,
+        eq(questionnaireQuestion.id, userQuestionnaireAnswer.questionId),
+      )
+      .where(eq(userQuestionnaireAnswer.userId, userId));
+
+    return answers.reduce((acc, { key, answer }) => {
+      acc[key] = answer;
+      return acc;
+    }, {} as Record<string, string>);
+  } catch (error) {
+    console.error('Failed to get user questionnaire answers from database');
+    throw error;
+  }
+}
+
+export async function createUserQuestionnaireAnswers(
+  userId: string,
+  answers: Array<{ questionId: string; answer: string }>,
+) {
+  try {
+    return await db.insert(userQuestionnaireAnswer).values(
+      answers.map((answer) => ({
+        userId,
+        questionId: answer.questionId,
+        answer: answer.answer,
+      })),
+    );
+  } catch (error) {
+    console.error('Failed to create user questionnaire answers in database');
+    throw error;
+  }
+}
+
+export async function updateUserQuestionnaireAnswers(
+  userId: string,
+  answers: Array<{ questionId: string; answer: string }>,
+) {
+  try {
+    // Delete existing answers
+    await db
+      .delete(userQuestionnaireAnswer)
+      .where(eq(userQuestionnaireAnswer.userId, userId));
+
+    // Insert new answers
+    return await createUserQuestionnaireAnswers(userId, answers);
+  } catch (error) {
+    console.error('Failed to update user questionnaire answers in database');
+    throw error;
+  }
+}
+
+export async function createOrRetrieveCustomer(userId: string, email: string) {
+  const existingUser = await db.query.user.findFirst({
+    where: eq(user.id, userId),
+  });
+
+  if (existingUser?.stripeCustomerId) {
+    return existingUser.stripeCustomerId;
+  }
+
+  // Create new Stripe customer
+  const customer = await stripe.customers.create({
+    email,
+    metadata: {
+      userId,
+    },
+  });
+
+  // Update user with Stripe customer ID
+  await db
+    .update(user)
+    .set({ stripeCustomerId: customer.id })
+    .where(eq(user.id, userId));
+
+  return customer.id;
 }

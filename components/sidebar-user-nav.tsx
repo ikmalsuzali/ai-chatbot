@@ -1,6 +1,7 @@
 'use client';
-import { ChevronUp } from 'lucide-react';
+import { ChevronUp, Settings, CreditCard, User } from 'lucide-react';
 import Image from 'next/image';
+import Link from 'next/link';
 import type { User } from 'next-auth';
 import { signOut } from 'next-auth/react';
 import { useTheme } from 'next-themes';
@@ -9,6 +10,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -42,13 +44,33 @@ export function SidebarUserNav({ user }: { user: User }) {
             side="top"
             className="w-[--radix-popper-anchor-width]"
           >
+            <DropdownMenuLabel>My Account</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            
+            <DropdownMenuItem asChild>
+              <Link href="/settings" className="flex items-center cursor-pointer">
+                <User className="mr-2 h-4 w-4" />
+                Profile Settings
+              </Link>
+            </DropdownMenuItem>
+            
+            <DropdownMenuItem asChild>
+              <Link href="/settings?tab=subscription" className="flex items-center cursor-pointer">
+                <CreditCard className="mr-2 h-4 w-4" />
+                Subscription
+              </Link>
+            </DropdownMenuItem>
+
             <DropdownMenuItem
               className="cursor-pointer"
               onSelect={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             >
+              <Settings className="mr-2 h-4 w-4" />
               {`Toggle ${theme === 'light' ? 'dark' : 'light'} mode`}
             </DropdownMenuItem>
+            
             <DropdownMenuSeparator />
+            
             <DropdownMenuItem asChild>
               <button
                 type="button"
