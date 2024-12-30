@@ -23,7 +23,6 @@ export const user = pgTable('User', {
 });
 
 export type User = InferSelectModel<typeof user>;
-
 export const chat = pgTable('Chat', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
   createdAt: timestamp('createdAt').notNull(),
