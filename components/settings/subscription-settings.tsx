@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { checkSubscriptionStatus } from '@/lib/subscription';
 import type { CustomerSubscription } from '@/types/stripe';
 import { toast } from 'sonner';
-import { InformationCircleIcon } from '@radix-ui/react-icons';
+import { InfoCircledIcon } from '@radix-ui/react-icons';
 
 export function SubscriptionSettings() {
   const { data: session } = useSession();
@@ -76,7 +76,7 @@ export function SubscriptionSettings() {
           <div className="rounded-md bg-blue-50 p-4 mb-4">
             <div className="flex">
               <div className="flex-shrink-0">
-                <InformationCircleIcon className="h-5 w-5 text-blue-400" />
+                <InfoCircledIcon className="h-5 w-5 text-blue-400" />
               </div>
               <div className="ml-3">
                 <h3 className="text-sm font-medium text-blue-800">

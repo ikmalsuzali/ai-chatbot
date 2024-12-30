@@ -1,4 +1,4 @@
-import 'server-only';
+'use server';
 
 import { genSaltSync, hashSync } from 'bcrypt-ts';
 import { and, asc, desc, eq, gt, gte } from 'drizzle-orm';

@@ -103,10 +103,14 @@ export default function Page() {
             </AuthForm>
           </>
         ) : (
+          null
+          
+          /* Questionnaire form temporarily disabled
           <QuestionnaireForm
             onSubmit={handleQuestionnaireSubmit}
             submitLabel="Create Account"
           />
+          */
         )}
       </div>
     </div>

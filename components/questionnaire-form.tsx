@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
+import { Skeleton } from '@/components/ui/skeleton';
 
 interface Question {
   id: string;
@@ -20,19 +21,23 @@ interface QuestionnaireFormProps {
   defaultValues?: Record<string, string>;
   onSubmit: (data: Record<string, string>) => Promise<void>;
   submitLabel?: string;
+  isLoading?: boolean;
 }
 
 export function QuestionnaireForm({ 
-  questions, 
+  questions = [],
   defaultValues = {}, 
   onSubmit, 
-  submitLabel = 'Save Changes' 
+  submitLabel = 'Save Changes',
+  isLoading = false
 }: QuestionnaireFormProps) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string>>(defaultValues);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    setAnswers(defaultValues);
+    if (JSON.stringify(answers) !== JSON.stringify(defaultValues)) {
+      setAnswers(defaultValues);
+    }
   }, [defaultValues]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -49,6 +54,28 @@ export function QuestionnaireForm({
     }
   };
 
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-8 w-[200px]" />
+          <Skeleton className="h-4 w-[300px] mt-2" />
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="space-y-2">
+                <Skeleton className="h-4 w-[250px]" />
+                <Skeleton className="h-24 w-full" />
+              </div>
+            ))}
+            <Skeleton className="h-10 w-[120px]" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -59,7 +86,7 @@ export function QuestionnaireForm({
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
-          {questions.map((question) => (
+          {questions?.map((question) => (
             <div key={question.id} className="space-y-2">
               <Label htmlFor={question.id}>
                 {question.question}

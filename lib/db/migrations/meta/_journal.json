@@ -1,6 +1,6 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
+  "version": "5",
+  "dialect": "pg",
   "entries": [
     {
       "idx": 0,
@@ -18,9 +18,9 @@
     },
     {
       "idx": 2,
-      "version": "7",
-      "when": 1730725226313,
-      "tag": "0002_wandering_riptide",
+      "version": "2",
+      "when": 1734000000000,
+      "tag": "0002_questionnaire_seed",
       "breakpoints": true
     },
     {
@@ -35,6 +35,13 @@
       "version": "7",
       "when": 1733945232355,
       "tag": "0004_odd_slayback",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1735533752591,
+      "tag": "0005_swift_nightcrawler",
       "breakpoints": true
     }
   ]

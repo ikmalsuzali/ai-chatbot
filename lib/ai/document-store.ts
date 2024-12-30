@@ -1,5 +1,5 @@
 import { Document } from 'langchain/document';
-import { OpenAIEmbeddings } from '@langchain/core/embeddings';
+import { OpenAIEmbeddings } from '@langchain/openai';
 import { MemoryVectorStore } from 'langchain/vectorstores/memory';
 
 interface DocumentMetadata {
