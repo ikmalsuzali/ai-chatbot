@@ -1,6 +1,5 @@
-import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
+import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
 import { PGVectorStore } from "@langchain/community/vectorstores/pgvector";
-import { ChatOpenAI } from "@langchain/openai";
 import { PromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence } from "@langchain/core/runnables";
@@ -8,11 +7,11 @@ import { Document } from "@langchain/core/documents";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { 
-  documents, 
+  document, 
   documentEmbeddings, 
   embeddingModels,
   chatHistory,
-  type NewChatHistory 
+  type ChatHistory 
 } from "../db/schema";
 import { eq, and, desc, gte } from "drizzle-orm";
 import { cosineSimilarity } from "../utils/similarity";
@@ -29,7 +28,7 @@ interface ChatResponse {
 }
 
 export class ChatService {
-  private embeddings: HuggingFaceInferenceEmbeddings;
+  private embeddings: OpenAIEmbeddings;
   private vectorStore: PGVectorStore;
   private llm: ChatOpenAI;
   private db: ReturnType<typeof drizzle>;
@@ -42,27 +41,24 @@ export class ChatService {
 
   constructor(
     private config: {
-      huggingFaceApiKey: string;
       openAIApiKey: string;
-      pgConfig: {
-        host: string;
-        port: number;
-        user: string;
-        password: string;
-        database: string;
-      };
+      postgresUrl: string;
     }
   ) {
-    const pool = new Pool(config.pgConfig);
+    const pool = new Pool({
+      connectionString: config.postgresUrl
+    });
     this.db = drizzle(pool);
     
-    this.embeddings = new HuggingFaceInferenceEmbeddings({
-      apiKey: config.huggingFaceApiKey,
-      modelName: "sentence-transformers/all-MiniLM-L6-v2"
+    this.embeddings = new OpenAIEmbeddings({
+      openAIApiKey: config.openAIApiKey,
+      modelName: "text-embedding-3-small"
     });
 
     this.vectorStore = new PGVectorStore(this.embeddings, {
-      postgresConnectionOptions: config.pgConfig,
+      postgresConnectionOptions: {
+        connectionString: config.postgresUrl
+      },
       tableName: "document_embeddings",
       columns: {
         idColumnName: "id",
@@ -93,7 +89,7 @@ export class ChatService {
     riskLevel: 'low' | 'medium' | 'high',
     userId?: string
   ): Promise<void> {
-    const chatRecord: NewChatHistory = {
+    const chatRecord: ChatHistory = {
       question,
       answer,
       accuracy,
@@ -106,7 +102,7 @@ export class ChatService {
       userId,
     };
 
-    await this.db.insert(chatHistory).values(chatRecord);
+    await this.db.insert(chatHistories).values(chatRecord);
   }
 
   async chat(
@@ -237,19 +233,19 @@ export class ChatService {
   ) {
     let query = this.db
       .select()
-      .from(chatHistory)
-      .orderBy(desc(chatHistory.createdAt));
+      .from(chatHistories)
+      .orderBy(desc(chatHistories.createdAt));
 
     if (options.userId) {
-      query = query.where(eq(chatHistory.userId, options.userId));
+      query = query.where(eq(chatHistories.userId, options.userId));
     }
 
     if (options.riskLevel) {
-      query = query.where(eq(chatHistory.riskLevel, options.riskLevel));
+      query = query.where(eq(chatHistories.riskLevel, options.riskLevel));
     }
 
     if (options.minAccuracy) {
-      query = query.where(gte(chatHistory.accuracy, options.minAccuracy));
+      query = query.where(gte(chatHistories.accuracy, options.minAccuracy));
     }
 
     if (options.limit) {
@@ -259,12 +255,12 @@ export class ChatService {
     return await query;
   }
 
-  private async getDocumentEmbedding(documentId: number): Promise<number[]> {
+  private async getDocumentEmbedding(documentId: string): Promise<number[]> {
     const [result] = await this.db
       .select({ embedding: documentEmbeddings.embedding })
       .from(documentEmbeddings)
       .where(eq(documentEmbeddings.documentId, documentId));
     
-    return result?.embedding ? JSON.parse(result.embedding) : [];
+    return result?.embedding ? JSON.parse(result.embedding as string) : [];
   }
 } 

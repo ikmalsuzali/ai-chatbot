@@ -10,6 +10,8 @@ import {
   foreignKey,
   boolean,
   integer,
+  serial,
+  real,
 } from 'drizzle-orm/pg-core';
 
 // User and authentication tables
@@ -175,3 +177,17 @@ export const userQuestionnaireAnswer = pgTable('user_questionnaire_answer', {
 });
 
 export type UserQuestionnaireAnswer = InferSelectModel<typeof userQuestionnaireAnswer>;
+
+export const chatHistory = pgTable('chat_history', {
+  id: serial('id').primaryKey(),
+  question: text('question').notNull(),
+  answer: text('answer').notNull(),
+  accuracy: real('accuracy').notNull(),
+  riskLevel: varchar('risk_level', { length: 10 }).notNull(),
+  sources: json('sources').notNull(),
+  metadata: json('metadata'),
+  userId: text('user_id'),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
+
+export type ChatHistory = typeof chatHistory.$inferInsert;

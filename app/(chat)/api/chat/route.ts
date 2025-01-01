@@ -5,6 +5,8 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { ChatOpenAI } from '@langchain/openai';
 import { BufferMemory } from 'langchain/memory';
 import { z } from 'zod';
+import { NextRequest, NextResponse } from "next/server";
+import { ChatService } from "@/lib/services/chat-service";
 
 import { auth } from '@/app/(auth)/auth';
 import { models } from '@/lib/ai/models';
@@ -25,6 +27,8 @@ import {
   getUserQuestionnaire,
   getQuestionnaireQuestions,
   getUserQuestionnaireAnswers,
+  getUser,
+  createUser,
 } from '@/lib/db/queries';
 import { generateUUID } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
@@ -57,19 +61,35 @@ function getChatMemory(chatId: string) {
   return chatMemories.get(chatId)!;
 }
 
-export async function POST(request: Request) {
-  const { id, messages, modelId } = await request.json();
+const requestSchema = z.object({
+  query: z.string().min(1),
+  maxSources: z.number().optional(),
+  similarityThreshold: z.number().min(0).max(1).optional(),
+  userId: z.string().optional(),
+});
 
-  const session = await auth();
+const chatService = new ChatService({
+  openAIApiKey: process.env.OPENAI_API_KEY!,
+  postgresUrl: process.env.POSTGRES_URL!
+});
+
+export async function POST(request: Request) {
+  const { id, messages } = await request.json();
+
+  let session = await auth();
 
   if (!session?.user?.id) {
-    return new Response('Unauthorized', { status: 401 });
-  }
-
-  const model = models.find((model) => model.id === modelId);
-
-  if (!model) {
-    return new Response('Model not found', { status: 404 });
+    // Look for system user or create one
+    let systemUser = await getUser('system@example.com');
+    
+    if (!systemUser) {
+      systemUser = await createUser(
+         'system@example.com',
+         'password'
+      );
+    }
+    
+    session = { user: systemUser[0] };
   }
 
   // Convert messages to LangChain format
@@ -86,13 +106,13 @@ export async function POST(request: Request) {
     }
   });
 
-  const chat = await getChatById({ id });
+  let chat = await getChatById({ id });
 
   if (!chat) {
     const title = await generateTitleFromUserMessage({ 
       message: messages[messages.length - 1] 
     });
-    await saveChat({ id, userId: session.user.id, title });
+     chat = await saveChat({ id, userId: session.user.id, title });
   }
 
   const userMessageId = generateUUID();
@@ -104,7 +124,7 @@ export async function POST(request: Request) {
         ...lastUserMessage, 
         id: userMessageId, 
         createdAt: new Date(), 
-        chatId: id 
+        chatId: chat.id 
       },
     ],
   });
@@ -113,108 +133,111 @@ export async function POST(request: Request) {
   const documentManager = DocumentManager.getInstance();
 
   // Enhanced tools with document integration
-  const tools = [
-    new DynamicStructuredTool({
-      name: 'searchDocuments',
-      description: 'Search through existing documents for relevant information',
-      schema: z.object({
-        query: z.string()
-      }),
-      func: async ({ query }: { query: string }) => {
-        const { documents } = await documentManager.queryDocuments(query, id);
-        return documents.map(doc => ({
-          content: doc.pageContent,
-          metadata: doc.metadata
-        }));
-      }
-    }),
+  // const tools = [
+  //   new DynamicStructuredTool({
+  //     name: 'searchDocuments',
+  //     description: 'Search through existing documents for relevant information',
+  //     schema: z.object({
+  //       query: z.string()
+  //     }),
+  //     func: async ({ query }: { query: string }) => {
+  //       const { documents } = await documentManager.queryDocuments(query, id);
+  //       return documents.map(doc => ({
+  //         content: doc.pageContent,
+  //         metadata: doc.metadata
+  //       }));
+  //     }
+  //   }),
 
-    new DynamicStructuredTool({
-      name: 'createDocument',
-      description: 'Create a document for a writing activity',
-      schema: z.object({
-        title: z.string(),
-        kind: z.enum(['text', 'code']),
-        content: z.string()
-      }),
-      func: async ({ title, kind, content }: { 
-        title: string;
-        kind: 'text' | 'code';
-        content: string;
-      }) => {
-        const docId = generateUUID();
+  //   new DynamicStructuredTool({
+  //     name: 'createDocument',
+  //     description: 'Create a document for a writing activity',
+  //     schema: z.object({
+  //       title: z.string(),
+  //       kind: z.enum(['text', 'code']),
+  //       content: z.string()
+  //     }),
+  //     func: async ({ title, kind, content }: { 
+  //       title: string;
+  //       kind: 'text' | 'code';
+  //       content: string;
+  //     }) => {
+  //       const docId = generateUUID();
         
-        // Save to vector store for future retrieval
-        await documentManager.addDocument(content, {
-          id: docId,
-          title,
-          kind,
-          createdAt: new Date().toISOString()
-        });
+  //       // Add null check for session.user
+  //       if (!session.user?.id) {
+  //         throw new Error('User not authenticated');
+  //       }
 
-        // Save to database
-        if (session.user?.id) {
-          await saveDocument({
-            id: docId,
-            title,
-            kind,
-            content,
-            userId: session.user.id
-          });
-        }
+  //       // Save to vector store for future retrieval
+  //       await documentManager.addDocument(content, {
+  //         id: docId,
+  //         title,
+  //         kind,
+  //         createdAt: new Date().toISOString()
+  //       });
 
-        return { id: docId, title, kind };
-      }
-    }),
+  //       // Save to database
+  //       await saveDocument({
+  //         id: docId,
+  //         title,
+  //         kind,
+  //         content,
+  //         userId: session.user.id  // Now TypeScript knows this is defined
+  //       });
 
-    new DynamicStructuredTool({
-      name: 'updateDocument',
-      description: 'Update an existing document',
-      schema: z.object({
-        id: z.string(),
-        content: z.string(),
-        description: z.string()
-      }),
-      func: async ({ id, content, description }: {
-        id: string;
-        content: string;
-        description: string;
-      }) => {
-        const document = await getDocumentById({ id });
-        if (!document) {
-          throw new Error('Document not found');
-        }
+  //       return { id: docId, title, kind };
+  //     }
+  //   }),
 
-        // Update vector store
-        await documentManager.addDocument(content, {
-          id,
-          title: document.title,
-          kind: document.kind,
-          updatedAt: new Date().toISOString()
-        });
+  //   new DynamicStructuredTool({
+  //     name: 'updateDocument',
+  //     description: 'Update an existing document',
+  //     schema: z.object({
+  //       id: z.string(),
+  //       content: z.string(),
+  //       description: z.string()
+  //     }),
+  //     func: async ({ id, content, description }: {
+  //       id: string;
+  //       content: string;
+  //       description: string;
+  //     }) => {
+  //       const document = await getDocumentById({ id });
+  //       if (!document) {
+  //         throw new Error('Document not found');
+  //       }
 
-        // Ensure session.user exists before accessing id
-        if (!session.user) {
-          throw new Error('User not authenticated');
-        }
+  //       // Update vector store
+  //       await documentManager.addDocument(content, {
+  //         id,
+  //         title: document.title,
+  //         kind: document.kind,
+  //         updatedAt: new Date().toISOString()
+  //       });
 
-        // Update database
-        await saveDocument({
-          id,
-          title: document.title,
-          kind: document.kind,
-          content,
-          userId: session.user.id
-        });
+  //       // Ensure session.user exists before accessing id
+  //       if (!session.user) {
+  //         throw new Error('User not authenticated');
+  //       }
 
-        return {
-          id,
-          title: document.title,
-          message: `Document updated: ${description}`
-        };
-      }
-    }),
-  ];
+  //       // Update database
+  //       await saveDocument({
+  //         id,
+  //         title: document.title,
+  //         kind: document.kind,
+  //         content,
+  //         userId: session.user.id
+  //       });
+
+  //       return {
+  //         id,
+  //         title: document.title,
+  //         message: `Document updated: ${description}`
+  //       };
+  //     }
+  //   }),
+  // ];
 
   // Create streaming response
   const encoder = new TextEncoder();
@@ -223,7 +246,7 @@ export async function POST(request: Request) {
 
   // Initialize chat model with memory
   const chatModel = new ChatOpenAI({
-    modelName: model.apiIdentifier,
+    modelName: 'gpt-4o-mini',
     streaming: true,
     callbacks: [{
       handleLLMNewToken(token) {
@@ -242,7 +265,7 @@ export async function POST(request: Request) {
         const history = await memory.loadMemoryVariables({});
         return [...(history.chat_history || []), new HumanMessage({ content: input.message })];
       },
-      tools: async () => tools,
+      // tools: async () => tools,
       systemMessage: async () => {
         let systemMessageContent = systemPrompt;
         

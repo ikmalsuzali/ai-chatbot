@@ -10,12 +10,12 @@ export async function POST(req: Request) {
     const result = await createUser(email, password);
     
     // Create user questionnaire
-    if (questionnaire) {
-      await createUserQuestionnaire(result.id, questionnaire);
-    }
+    // if (questionnaire) {
+    //   await createUserQuestionnaire(result.id, questionnaire);
+    // }
     
     // Set up trial subscription
-    await createTrialSubscription(result.id, email);
+    // await createTrialSubscription(result.id, email);
 
     return NextResponse.json({ success: true });
   } catch (error) {

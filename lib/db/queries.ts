@@ -29,6 +29,7 @@ import { BlockKind } from '@/components/block';
 const client = postgres(process.env.POSTGRES_URL!);
 const db = drizzle(client);
 
+
 export async function getUser(email: string): Promise<Array<User>> {
   try {
     return await db.select().from(user).where(eq(user.email, email));
@@ -51,7 +52,6 @@ export async function createUser(email: string, password: string) {
 }
 
 export async function saveChat({
-  id,
   userId,
   title,
 }: {
@@ -60,12 +60,12 @@ export async function saveChat({
   title: string;
 }) {
   try {
-    return await db.insert(chat).values({
-      id,
+    const chatResponse = await db.insert(chat).values({
       createdAt: new Date(),
       userId,
       title,
-    });
+    }).returning();
+    return chatResponse[0];
   } catch (error) {
     console.error('Failed to save chat in database');
     throw error;
@@ -99,7 +99,13 @@ export async function getChatsByUserId({ id }: { id: string }) {
 
 export async function getChatById({ id }: { id: string }) {
   try {
+    if (!id) {
+      return null;
+    }
     const [selectedChat] = await db.select().from(chat).where(eq(chat.id, id));
+    if (!selectedChat) {
+      return null;
+    }
     return selectedChat;
   } catch (error) {
     console.error('Failed to get chat by id from database');
