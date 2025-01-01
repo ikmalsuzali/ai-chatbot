@@ -7,6 +7,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useRouter } from 'next/navigation';
+import { eq } from 'drizzle-orm';
 
 interface Question {
   id: string;
@@ -33,6 +35,7 @@ export function QuestionnaireForm({
 }: QuestionnaireFormProps) {
   const [answers, setAnswers] = useState<Record<string, string>>(defaultValues);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     if (JSON.stringify(answers) !== JSON.stringify(defaultValues)) {
@@ -47,6 +50,12 @@ export function QuestionnaireForm({
     try {
       await onSubmit(answers);
       toast.success('Preferences saved successfully');
+      
+      await db.update(user).set({
+        hasCompletedQuestionnaire: true
+      }).where(eq(user.id, userId));
+      
+      router.push('/chat');
     } catch (error) {
       toast.error('Failed to save preferences');
     } finally {

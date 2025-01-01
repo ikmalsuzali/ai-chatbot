@@ -1,7 +1,7 @@
 import { ChatMessage, HumanMessage, AIMessage, SystemMessage } from '@langchain/core/messages';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { RunnableSequence } from '@langchain/core/runnables';
-import { StructuredTool } from '@langchain/core/tools';
+import { DynamicStructuredTool } from '@langchain/core/tools';
 import { ChatOpenAI } from '@langchain/openai';
 import { BufferMemory } from 'langchain/memory';
 import { z } from 'zod';
@@ -73,10 +73,17 @@ export async function POST(request: Request) {
   }
 
   // Convert messages to LangChain format
-  const langChainMessages = messages.map(msg => {
-    if (msg.role === 'user') return new HumanMessage(msg.content);
-    if (msg.role === 'assistant') return new AIMessage(msg.content);
-    return new SystemMessage(msg.content);
+  const langChainMessages = messages.map((msg: { role: string; content: string }) => {
+    switch (msg.role) {
+      case 'user':
+        return new HumanMessage({ content: msg.content });
+      case 'assistant':
+        return new AIMessage({ content: msg.content });
+      case 'system':
+        return new SystemMessage({ content: msg.content });
+      default:
+        return new SystemMessage({ content: msg.content });
+    }
   });
 
   const chat = await getChatById({ id });
@@ -107,13 +114,13 @@ export async function POST(request: Request) {
 
   // Enhanced tools with document integration
   const tools = [
-    new StructuredTool({
+    new DynamicStructuredTool({
       name: 'searchDocuments',
       description: 'Search through existing documents for relevant information',
       schema: z.object({
         query: z.string()
       }),
-      func: async ({ query }) => {
+      func: async ({ query }: { query: string }) => {
         const { documents } = await documentManager.queryDocuments(query, id);
         return documents.map(doc => ({
           content: doc.pageContent,
@@ -122,7 +129,7 @@ export async function POST(request: Request) {
       }
     }),
 
-    new StructuredTool({
+    new DynamicStructuredTool({
       name: 'createDocument',
       description: 'Create a document for a writing activity',
       schema: z.object({
@@ -130,7 +137,11 @@ export async function POST(request: Request) {
         kind: z.enum(['text', 'code']),
         content: z.string()
       }),
-      func: async ({ title, kind, content }) => {
+      func: async ({ title, kind, content }: { 
+        title: string;
+        kind: 'text' | 'code';
+        content: string;
+      }) => {
         const docId = generateUUID();
         
         // Save to vector store for future retrieval
@@ -156,7 +167,7 @@ export async function POST(request: Request) {
       }
     }),
 
-    new StructuredTool({
+    new DynamicStructuredTool({
       name: 'updateDocument',
       description: 'Update an existing document',
       schema: z.object({
@@ -164,7 +175,11 @@ export async function POST(request: Request) {
         content: z.string(),
         description: z.string()
       }),
-      func: async ({ id, content, description }) => {
+      func: async ({ id, content, description }: {
+        id: string;
+        content: string;
+        description: string;
+      }) => {
         const document = await getDocumentById({ id });
         if (!document) {
           throw new Error('Document not found');
@@ -178,13 +193,18 @@ export async function POST(request: Request) {
           updatedAt: new Date().toISOString()
         });
 
+        // Ensure session.user exists before accessing id
+        if (!session.user) {
+          throw new Error('User not authenticated');
+        }
+
         // Update database
         await saveDocument({
           id,
           title: document.title,
           kind: document.kind,
           content,
-          userId: session.user.id!
+          userId: session.user.id
         });
 
         return {
@@ -220,7 +240,7 @@ export async function POST(request: Request) {
     {
       memory: async (input) => {
         const history = await memory.loadMemoryVariables({});
-        return [...history.chat_history, new HumanMessage(input.message)];
+        return [...(history.chat_history || []), new HumanMessage({ content: input.message })];
       },
       tools: async () => tools,
       systemMessage: async () => {
@@ -242,10 +262,9 @@ export async function POST(request: Request) {
           }
         }
         
-        return new SystemMessage(systemMessageContent);
+        return new SystemMessage({ content: systemMessageContent });
       },
       context: async (input) => {
-        // Get relevant context and QA history
         const { documents, relevantQAs } = await documentManager.queryDocuments(
           input.message,
           id
@@ -259,50 +278,51 @@ export async function POST(request: Request) {
       }
     },
     async (input) => {
-      const response = await chatModel.invoke({
-        messages: [
+      try {
+        const messages = [
           input.systemMessage,
-          // Include relevant context in the prompt
-          new SystemMessage(`Relevant context:\n${input.context.contextText}\n\nRelevant previous QA:\n${
-            input.context.relevantQAs.map(qa => 
-              `Q: ${qa.question}\nA: ${qa.answer}\n`
-            ).join('\n')
-          }`),
+          new SystemMessage({ 
+            content: `Relevant context:\n${input.context.contextText}\n\nRelevant previous QA:\n${
+              input.context.relevantQAs.map((qa: { question: string; answer: string }) => 
+                `Q: ${qa.question}\nA: ${qa.answer}\n`
+              ).join('\n')
+            }`
+          }),
           ...input.memory,
-        ],
-        tools: input.tools
-      });
+        ];
 
-      // Verify and track the answer
-      const verificationResult = await documentManager.verifyAndTrackAnswer(
-        id,
-        input.memory[input.memory.length - 1].content,
-        response.content,
-        input.context.contextText,
-        {
-          modelId,
-          documents: input.context.documents.map(doc => doc.metadata)
+        // Use generate instead of invoke to handle streaming properly
+        const response = await chatModel.generate([messages]);
+        const content = response.generations[0][0].text;
+
+        // Save to memory immediately after getting response
+        if (input.memory.length > 0) {
+          const lastMessage = input.memory[input.memory.length - 1];
+          await memory.saveContext(
+            { input: lastMessage.content },
+            { output: content }
+          );
         }
-      );
 
-      // If the answer is not accurate, append a correction
-      if (!verificationResult.verification.isAccurate) {
-        response.content += `\n\nNote: I need to correct my previous statement. ${verificationResult.verification.explanation}`;
+        return content;
+      } catch (error) {
+        console.error('Error in chain:', error);
+        throw error; // Re-throw to be caught by the main error handler
       }
-
-      // Save to memory
-      await memory.saveContext(
-        { input: input.memory[input.memory.length - 1].content },
-        { output: response.content }
-      );
-
-      return response;
     },
     new StringOutputParser()
   ]);
 
   try {
     const lastMessage = messages[messages.length - 1];
+    
+    // Start the response immediately
+    writer.write(encoder.encode(`data: ${JSON.stringify({
+      type: 'start',
+      id: generateUUID(),
+      createdAt: new Date().toISOString()
+    })}\n\n`));
+
     const response = await chain.invoke({
       message: lastMessage.content
     });
@@ -320,6 +340,14 @@ export async function POST(request: Request) {
         }]
       });
     }
+
+    // Ensure we write the completion message
+    writer.write(encoder.encode(`data: ${JSON.stringify({
+      type: 'complete',
+      id: generateUUID(),
+      content: response,
+      createdAt: new Date().toISOString()
+    })}\n\n`));
 
     writer.write(encoder.encode('data: [DONE]\n\n'));
     await writer.close();

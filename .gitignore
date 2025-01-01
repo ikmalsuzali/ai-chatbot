@@ -36,3 +36,7 @@ yarn-error.log*
 .vercel
 .vscode
 .env*.local
+
+# public/docs
+public/docs/*
+!public/docs/.gitkeep

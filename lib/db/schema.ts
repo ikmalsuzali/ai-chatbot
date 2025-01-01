@@ -12,6 +12,7 @@ import {
   integer,
 } from 'drizzle-orm/pg-core';
 
+// User and authentication tables
 export const user = pgTable('User', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
   email: varchar('email', { length: 256 }).unique().notNull(),
@@ -23,6 +24,8 @@ export const user = pgTable('User', {
 });
 
 export type User = InferSelectModel<typeof user>;
+
+// Chat related tables
 export const chat = pgTable('Chat', {
   id: uuid('id').primaryKey().notNull().defaultRandom(),
   createdAt: timestamp('createdAt').notNull(),
@@ -69,10 +72,11 @@ export const vote = pgTable(
 
 export type Vote = InferSelectModel<typeof vote>;
 
+// Document processing tables
 export const document = pgTable(
   'Document',
   {
-    id: uuid('id').notNull().defaultRandom(),
+    id: uuid('id').primaryKey().notNull().defaultRandom(),
     createdAt: timestamp('createdAt').notNull(),
     title: text('title').notNull(),
     content: text('content'),
@@ -82,21 +86,53 @@ export const document = pgTable(
     userId: uuid('userId')
       .notNull()
       .references(() => user.id),
-  },
-  (table) => {
-    return {
-      pk: primaryKey({ columns: [table.id, table.createdAt] }),
-    };
-  },
+    urlPath: varchar('urlPath', { length: 1024 }),
+    fileType: varchar('fileType', { length: 64 }),
+    metadata: json('metadata'),
+    isActive: boolean('isActive').notNull().default(true),
+    documentGroupId: varchar('documentGroupId', { length: 256 }),
+    version: integer('version').notNull().default(1),
+    expiresAt: timestamp('expiresAt'),
+    lastAccessedAt: timestamp('lastAccessedAt'),
+  }
 );
 
 export type Document = InferSelectModel<typeof document>;
 
+export const embeddingModels = pgTable('embedding_models', {
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
+  name: varchar('name', { length: 256 }).notNull(),
+  provider: varchar('provider', { length: 64 }).notNull(),
+  dimensions: integer('dimensions').notNull(),
+  status: varchar('status', { length: 32 }).notNull().default('active'),
+  metadata: json('metadata'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+});
+
+export type EmbeddingModel = InferSelectModel<typeof embeddingModels>;
+
+export const documentEmbeddings = pgTable('document_embeddings', {
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
+  documentId: uuid('documentId')
+    .notNull()
+    .references(() => document.id),
+  content: text('content').notNull(),
+  embedding: json('embedding').notNull(),
+  metadata: json('metadata'),
+  fileType: varchar('fileType', { length: 64 }),
+  isActive: boolean('isActive').notNull().default(true),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+});
+
+export type DocumentEmbedding = InferSelectModel<typeof documentEmbeddings>;
+
 export const suggestion = pgTable(
   'Suggestion',
   {
-    id: uuid('id').notNull().defaultRandom(),
-    documentId: uuid('documentId').notNull(),
+    id: uuid('id').primaryKey().notNull().defaultRandom(),
+    documentId: uuid('documentId')
+      .notNull()
+      .references(() => document.id),
     documentCreatedAt: timestamp('documentCreatedAt').notNull(),
     originalText: text('originalText').notNull(),
     suggestedText: text('suggestedText').notNull(),
@@ -106,20 +142,14 @@ export const suggestion = pgTable(
       .notNull()
       .references(() => user.id),
     createdAt: timestamp('createdAt').notNull(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.id] }),
-    documentRef: foreignKey({
-      columns: [table.documentId, table.documentCreatedAt],
-      foreignColumns: [document.id, document.createdAt],
-    }),
-  }),
+  }
 );
 
 export type Suggestion = InferSelectModel<typeof suggestion>;
 
+// Questionnaire tables
 export const questionnaireQuestion = pgTable('questionnaire_question', {
-  id: uuid('id').defaultRandom().primaryKey(),
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
   question: text('question').notNull(),
   key: varchar('key', { length: 64 }).notNull().unique(),
   placeholder: text('placeholder'),
@@ -129,15 +159,19 @@ export const questionnaireQuestion = pgTable('questionnaire_question', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-export type QuestionnaireQuestion = typeof questionnaireQuestion.$inferSelect;
+export type QuestionnaireQuestion = InferSelectModel<typeof questionnaireQuestion>;
 
 export const userQuestionnaireAnswer = pgTable('user_questionnaire_answer', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
-  questionId: uuid('question_id').notNull().references(() => questionnaireQuestion.id, { onDelete: 'cascade' }),
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  questionId: uuid('question_id')
+    .notNull()
+    .references(() => questionnaireQuestion.id, { onDelete: 'cascade' }),
   answer: text('answer').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-export type UserQuestionnaireAnswer = typeof userQuestionnaireAnswer.$inferSelect;
+export type UserQuestionnaireAnswer = InferSelectModel<typeof userQuestionnaireAnswer>;

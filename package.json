@@ -16,7 +16,16 @@
     "db:push:force": "drizzle-kit push:force",
     "db:pull": "drizzle-kit pull",
     "db:check": "drizzle-kit check",
-    "db:up": "drizzle-kit up"
+    "db:up": "drizzle-kit up",
+    "process:data": "tsx src/scripts/process-data.ts",
+    "process:data:watch": "tsx watch src/scripts/process-data.ts",
+    "add:embedding-model": "tsx src/scripts/add-embedding-model.ts",
+    "manage:documents": "tsx src/scripts/manage-documents.ts",
+    "manage:urls": "tsx src/scripts/manage-document-urls.ts",
+    "db:reset": "tsx src/scripts/reset-db.ts"
+  },
+  "engines": {
+    "node": ">=20.15.0"
   },
   "dependencies": {
     "@ai-sdk/openai": "1.0.6",
@@ -25,6 +34,7 @@
     "@codemirror/state": "^6.5.0",
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.35.3",
+    "@langchain/community": "^0.3.20",
     "@langchain/core": "^0.3.26",
     "@langchain/langgraph": "^0.2.36",
     "@langchain/openai": "^0.3.16",
@@ -39,6 +49,7 @@
     "@radix-ui/react-tabs": "^1.1.2",
     "@radix-ui/react-tooltip": "^1.1.3",
     "@radix-ui/react-visually-hidden": "^1.1.0",
+    "@types/pg": "^8.10.2",
     "@vercel/analytics": "^1.3.1",
     "@vercel/blob": "^0.24.1",
     "@vercel/postgres": "^0.10.0",
@@ -55,13 +66,16 @@
     "fast-deep-equal": "^3.1.3",
     "framer-motion": "^11.3.19",
     "geist": "^1.3.1",
-    "langchain": "^0.3.8",
+    "langchain": "^0.0.200",
     "lucide-react": "^0.446.0",
+    "mammoth": "^1.9.0",
     "nanoid": "^5.0.8",
     "next": "15.0.3-canary.2",
     "next-auth": "5.0.0-beta.25",
     "next-themes": "^0.3.0",
     "orderedmap": "^2.1.1",
+    "pdfjs-dist": "^3.11.174",
+    "pg": "^8.11.0",
     "postgres": "^3.4.4",
     "prosemirror-example-setup": "^1.2.3",
     "prosemirror-inputrules": "^1.4.0",
@@ -83,6 +97,7 @@
     "tailwind-merge": "^2.5.2",
     "tailwindcss-animate": "^1.0.7",
     "usehooks-ts": "^3.1.0",
+    "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
