@@ -136,13 +136,18 @@ export async function POST(request: Request) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          // Send initial message to indicate processing
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({
-              type: 'status',
-              content: 'Processing your request...'
-            })}\n\n`)
-          );
+          // Generate message ID once at the start
+          const assistantMessageId = generateUUID();
+
+          // Initial message to show the assistant is responding
+          // controller.enqueue(
+          //   encoder.encode(`data: ${JSON.stringify({
+          //     id: assistantMessageId,
+          //     role: 'assistant',
+          //     content: '',
+          //     createdAt: new Date().toISOString()
+          //   })}\n\n`)
+          // );
 
           const response = await chatService.chat(
             lastUserMessage.content,
@@ -153,36 +158,34 @@ export async function POST(request: Request) {
             }
           );
 
-          // Stream the response content in smaller chunks
-          const chunkSize = 20; // Adjust this value based on your needs
+          let fullContent = '';
+          const chunkSize = 20;
           const chunks = response.answer.match(new RegExp(`.{1,${chunkSize}}`, 'g')) || [];
           
           for (const chunk of chunks) {
+            // fullContent += chunk;
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({
-                type: 'text-delta',
-                content: chunk,
-                role: 'assistant'
+                id: assistantMessageId,
+                role: 'assistant',
+                content: fullContent,
+                delta: chunk
               })}\n\n`)
             );
             
-            // Add a small delay between chunks to simulate streaming
             await new Promise(resolve => setTimeout(resolve, 50));
           }
 
-          // Send completion with metadata
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({
-              type: 'complete',
-              id: generateUUID(),
+          // Save the complete message to the database
+          await saveMessages({
+            messages: [{
+              id: assistantMessageId,
               content: response.answer,
               role: 'assistant',
-              sources: response.sources,
-              accuracy: response.averageAccuracy,
-              riskLevel: response.riskLevel,
-              createdAt: new Date().toISOString()
-            })}\n\n`)
-          );
+              chatId: chat.id,
+              createdAt: new Date()
+            }]
+          });
 
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         } catch (error) {

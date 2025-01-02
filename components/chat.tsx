@@ -45,9 +45,80 @@ export function Chat({
     body: { id, modelId: selectedModelId },
     initialMessages,
     experimental_throttle: 100,
-    onResponse: (response) => {
-      // Validate that the response is coming through
-      console.log('Streaming response:', response);
+    onResponse: async (response) => {
+      if (!response.ok) {
+        console.error('Response error:', response.statusText);
+        return;
+      }
+
+      // Get the reader from the response body
+      const reader = response.body?.getReader();
+      if (!reader) {
+        console.error('No reader available');
+        return;
+      }
+
+      try {
+        let accumulatedContent = '';
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          
+          if (done) {
+            console.log('Stream complete');
+            break;
+          }
+
+          // Decode the stream chunk
+          const data = new TextDecoder().decode(value);
+          console.log('Received chunk:', data);
+
+          // Parse the JSON data
+          try {
+            // Remove the "data: " prefix and parse the remaining JSON
+            const jsonString = data.replace(/^data: /, '');
+            const jsonData = JSON.parse(jsonString);
+            console.log('Parsed JSON:', jsonData);
+            if (jsonData.delta) {
+              // Handle newlines and special characters
+              const formattedDelta = jsonData.delta
+                .replace(/\\n/g, '\n')  // Convert \n string to actual newlines
+                .replace(/\\t/g, '\t')  // Convert \t string to actual tabs
+                .replace(/\\\"/g, '"')  // Convert escaped quotes to regular quotes
+                .replace(/\\\\/g, '\\'); // Convert double backslashes to single
+
+              // Accumulate the content
+              accumulatedContent += formattedDelta;
+            }
+          } catch (error) {
+            console.error('Error parsing chunk:', error);
+          }
+
+          // Update the messages with the accumulated content
+          setMessages(prevMessages => {
+            const lastMessage = prevMessages[prevMessages.length - 1];
+            if (lastMessage?.role === 'assistant') {
+              // Update existing assistant message
+              return prevMessages.map((msg, i) => 
+                i === prevMessages.length - 1 
+                  ? { ...msg, content: accumulatedContent }
+                  : msg
+              );
+            } else {
+              // Create new assistant message
+              return [...prevMessages, {
+                id: `${id}-${Date.now()}`,
+                role: 'assistant',
+                content: accumulatedContent
+              }];
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error reading stream:', error);
+      } finally {
+        reader.releaseLock();
+      }
     },
     onFinish: () => {
       mutate('/api/history');
