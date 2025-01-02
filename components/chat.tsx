@@ -60,14 +60,12 @@ export function Chat({
 
       try {
         let accumulatedContent = '';
+        let content = ''
         
         while (true) {
           const { done, value } = await reader.read();
           
-          if (done) {
-            console.log('Stream complete');
-            break;
-          }
+         
 
           // Decode the stream chunk
           const data = new TextDecoder().decode(value);
@@ -80,15 +78,13 @@ export function Chat({
             const jsonData = JSON.parse(jsonString);
             console.log('Parsed JSON:', jsonData);
             if (jsonData.delta) {
-              // Handle newlines and special characters
-              const formattedDelta = jsonData.delta
-                .replace(/\\n/g, '\n')  // Convert \n string to actual newlines
-                .replace(/\\t/g, '\t')  // Convert \t string to actual tabs
-                .replace(/\\\"/g, '"')  // Convert escaped quotes to regular quotes
-                .replace(/\\\\/g, '\\'); // Convert double backslashes to single
-
               // Accumulate the content
-              accumulatedContent += formattedDelta;
+              accumulatedContent += jsonData.delta;
+            }
+
+            if (jsonData.content) {
+              content = jsonData.content
+              console.log('Content parsed:', content);
             }
           } catch (error) {
             console.error('Error parsing chunk:', error);
@@ -113,6 +109,24 @@ export function Chat({
               }];
             }
           });
+
+          if (done) {
+            console.log('Stream complete');
+            console.log('Content:', content);
+            // Set the final message with complete content
+            setMessages(prevMessages => {
+              const lastMessage = prevMessages[prevMessages.length - 1];
+              if (lastMessage?.role === 'assistant') {
+                return prevMessages.map((msg, i) => 
+                  i === prevMessages.length - 1 
+                    ? { ...msg, content: content }
+                    : msg
+                );
+              }
+              return prevMessages;
+            });
+            break;
+          }
         }
       } catch (error) {
         console.error('Error reading stream:', error);

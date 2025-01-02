@@ -136,18 +136,7 @@ export async function POST(request: Request) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          // Generate message ID once at the start
           const assistantMessageId = generateUUID();
-
-          // Initial message to show the assistant is responding
-          // controller.enqueue(
-          //   encoder.encode(`data: ${JSON.stringify({
-          //     id: assistantMessageId,
-          //     role: 'assistant',
-          //     content: '',
-          //     createdAt: new Date().toISOString()
-          //   })}\n\n`)
-          // );
 
           const response = await chatService.chat(
             lastUserMessage.content,
@@ -159,20 +148,23 @@ export async function POST(request: Request) {
           );
 
           let fullContent = '';
+          const text = response.answer;
+          let currentIndex = 0;
           const chunkSize = 20;
-          const chunks = response.answer.match(new RegExp(`.{1,${chunkSize}}`, 'g')) || [];
           
-          for (const chunk of chunks) {
-            // fullContent += chunk;
+          while (currentIndex < text.length) {
+            const chunk = text.slice(currentIndex, currentIndex + chunkSize);
+            fullContent += chunk;
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({
                 id: assistantMessageId,
                 role: 'assistant',
                 content: fullContent,
                 delta: chunk
-              })}\n\n`)
+              }, null, 0)}\n\n`)
             );
             
+            currentIndex += chunkSize;
             await new Promise(resolve => setTimeout(resolve, 50));
           }
 
@@ -187,7 +179,10 @@ export async function POST(request: Request) {
             }]
           });
 
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          // Send the DONE message as a proper JSON object
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`)
+          );
         } catch (error) {
           console.error('Error in chat processing:', error);
           controller.enqueue(
