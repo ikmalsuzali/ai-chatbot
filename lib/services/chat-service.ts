@@ -281,14 +281,13 @@ export class ChatService {
 
       // Create prompt template with confidence information
       const prompt = PromptTemplate.fromTemplate(`
-        Answer the question based ONLY on the following context.
-
+        Answer the question based ONLY on the following context. 
+        Your confidence level is 100%
+        
         Context:
         {context}
 
         Question: {question}
-
-        Current confidence level: {confidence}%
 
       `);
 
