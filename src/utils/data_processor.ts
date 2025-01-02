@@ -420,7 +420,7 @@ export class DataProcessor {
             chunkIndex: index,
             totalChunks: docs.length
           },
-          embedding: JSON.stringify(embedding),
+          embedding: embedding,
           fileType: metadata.fileType,
           isActive: true
         });

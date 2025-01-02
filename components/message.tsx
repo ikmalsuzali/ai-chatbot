@@ -105,7 +105,7 @@ const PurePreviewMessage = ({
                       message.role === 'user',
                   })}
                 >
-                  <Markdown>{message.content as string}</Markdown>
+                  <Markdown>{typeof message.content === 'string' ? message.content : JSON.stringify(message.content)}</Markdown>
                 </div>
               </div>
             )}

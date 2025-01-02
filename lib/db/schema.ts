@@ -12,6 +12,7 @@ import {
   integer,
   serial,
   real,
+  vector,
 } from 'drizzle-orm/pg-core';
 
 // User and authentication tables
@@ -119,7 +120,7 @@ export const documentEmbeddings = pgTable('document_embeddings', {
     .notNull()
     .references(() => document.id),
   content: text('content').notNull(),
-  embedding: json('embedding').notNull(),
+  embedding: vector('embedding', { dimensions: 1536 }).notNull(),
   metadata: json('metadata'),
   fileType: varchar('fileType', { length: 64 }),
   isActive: boolean('isActive').notNull().default(true),

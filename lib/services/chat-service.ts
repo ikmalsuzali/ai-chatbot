@@ -3,13 +3,10 @@ import { PGVectorStore } from "@langchain/community/vectorstores/pgvector";
 import { PromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence } from "@langchain/core/runnables";
-import { Document } from "@langchain/core/documents";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres  from "postgres";
 import { 
-  document, 
   documentEmbeddings, 
-  embeddingModels,
   chatHistory,
   type ChatHistory 
 } from "../db/schema";
@@ -32,32 +29,46 @@ export class ChatService {
   private vectorStore: PGVectorStore;
   private llm: ChatOpenAI;
   private db: ReturnType<typeof drizzle>;
-  private similarityThreshold = 0.7; // Minimum similarity score to consider
+  private similarityThreshold = 0.2; // Minimum similarity score to consider
+  private sql: ReturnType<typeof postgres>;
 
   private readonly RISK_THRESHOLDS = {
-    HIGH: 40,
-    MEDIUM: 70,
+    HIGH: 30,
+    MEDIUM: 50,
   };
 
+  private readonly HIGH_RISK_PROMPT = PromptTemplate.fromTemplate(`
+    I understand you're looking for information about {question}
+
+    While I don't have enough specific information to answer your question directly, I can offer some general advice about improving presentations and charisma:
+
+    1. Consider how this topic might be presented more effectively
+    2. Think about the audience's perspective and needs
+    3. Focus on clear, confident communication
+
+    Based on these principles and the following context (if relevant):
+    {context}
+
+    Here's my suggestion:
+  `);
+
   constructor(
-    private config: {
-      openAIApiKey: string;
-      postgresUrl: string;
-    }
+    pgConfig: string,
+    openAIApiKey: string,
   ) {
-    const pool = new Pool({
-      connectionString: config.postgresUrl
-    });
-    this.db = drizzle(pool);
+
+    this.sql = postgres(pgConfig);
+
+    this.db = drizzle(this.sql);
     
     this.embeddings = new OpenAIEmbeddings({
-      openAIApiKey: config.openAIApiKey,
+      openAIApiKey: openAIApiKey,
       modelName: "text-embedding-3-small"
     });
 
     this.vectorStore = new PGVectorStore(this.embeddings, {
       postgresConnectionOptions: {
-        connectionString: config.postgresUrl
+        connectionString: pgConfig
       },
       tableName: "document_embeddings",
       columns: {
@@ -66,12 +77,15 @@ export class ChatService {
         contentColumnName: "content",
         metadataColumnName: "metadata",
       },
+      distanceStrategy: "cosine",
+   
+
     });
 
     this.llm = new ChatOpenAI({
       modelName: "gpt-4-turbo-preview",
       temperature: 0,
-      apiKey: config.openAIApiKey,
+      apiKey: openAIApiKey,
     });
   }
 
@@ -102,7 +116,21 @@ export class ChatService {
       userId,
     };
 
-    await this.db.insert(chatHistories).values(chatRecord);
+    await this.db.insert(chatHistory).values(chatRecord);
+  }
+
+  private async processVectorResults(vectorResults: any[], queryEmbedding: number[]) {
+    const sourcesWithSimilarity = [];
+    for (const doc of vectorResults) {
+      const docEmbedding = await this.getDocumentEmbedding(doc.id as string);
+      const similarity = cosineSimilarity(queryEmbedding, docEmbedding);
+      sourcesWithSimilarity.push({
+        content: doc.pageContent,
+        metadata: doc.metadata,
+        similarity
+      });
+    }
+    return sourcesWithSimilarity;
   }
 
   async chat(
@@ -114,24 +142,27 @@ export class ChatService {
     } = {}
   ): Promise<ChatResponse> {
     // Get relevant documents
+    
     const vectorResults = await this.vectorStore.similaritySearch(query, 
       options.maxSources || 5,
-      { isActive: true }
     );
 
     // Calculate similarity scores
     const queryEmbedding = await this.embeddings.embedQuery(query);
-    const sourcesWithSimilarity = await Promise.all(
-      vectorResults.map(async (doc) => {
-        const docEmbedding = await this.getDocumentEmbedding(doc.metadata.documentId);
-        const similarity = cosineSimilarity(queryEmbedding, docEmbedding);
-        return {
-          content: doc.pageContent,
-          metadata: doc.metadata,
-          similarity
-        };
-      })
-    );
+
+      // In the chat method, replace the Promise.all block with:
+  const sourcesWithSimilarity = await Promise.all(
+    vectorResults.map(async (doc) => {
+      const docEmbedding = await this.getDocumentEmbedding(doc.id as string);
+      const similarity = cosineSimilarity(queryEmbedding, docEmbedding);
+      return {
+        content: doc.pageContent,
+        metadata: doc.metadata,
+        similarity
+      };
+    })
+  );
+    // const sourcesWithSimilarity = await this.processVectorResults(vectorResults, queryEmbedding);
 
     // Filter by similarity threshold
     const threshold = options.similarityThreshold || this.similarityThreshold;
@@ -149,8 +180,22 @@ export class ChatService {
 
     // Handle high-risk or no sources scenarios
     if (riskLevel === 'high' || relevantSources.length === 0) {
+      // Use the presentation-focused prompt for high-risk scenarios
+      const answer = await RunnableSequence.from([
+        {
+          question: (input: { question: string; context: string }) => input.question,
+          context: (input: { question: string; context: string }) => input.context,
+        },
+        this.HIGH_RISK_PROMPT,
+        this.llm,
+        new StringOutputParser(),
+      ]).invoke({
+        question: query,
+        context: relevantSources.map(s => s.content).join("\n\n") || "No specific context available.",
+      });
+
       const response = {
-        answer: "I apologize, but I cannot provide a reliable answer to this question based on the available information. The confidence level is too low to ensure accuracy.",
+        answer,
         sources: [],
         averageAccuracy,
         riskLevel
@@ -159,7 +204,7 @@ export class ChatService {
       // Store in chat history
       await this.storeChatHistory(
         query,
-        response.answer,
+        answer,
         averageAccuracy,
         [],
         riskLevel,
@@ -171,7 +216,7 @@ export class ChatService {
 
     // Create prompt template with confidence information
     const prompt = PromptTemplate.fromTemplate(`
-      Answer the question based ONLY on the following context. If you cannot answer the question based solely on the context, say "I cannot answer this question based on the available information."
+      Answer the question based ONLY on the following context.
 
       Context:
       {context}
@@ -180,8 +225,6 @@ export class ChatService {
 
       Current confidence level: {confidence}%
 
-      Answer the question concisely and only use information from the provided context. Include relevant quotes if appropriate.
-      If the confidence level is between 40-70%, preface your answer with a warning about potential inaccuracies.
     `);
 
     // Create chain
@@ -259,8 +302,8 @@ export class ChatService {
     const [result] = await this.db
       .select({ embedding: documentEmbeddings.embedding })
       .from(documentEmbeddings)
-      .where(eq(documentEmbeddings.documentId, documentId));
+      .where(eq(documentEmbeddings.id, documentId));
     
-    return result?.embedding ? JSON.parse(result.embedding as string) : [];
+    return Array.isArray(result?.embedding) ? result.embedding : [];
   }
 } 

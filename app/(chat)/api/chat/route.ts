@@ -68,13 +68,13 @@ const requestSchema = z.object({
   userId: z.string().optional(),
 });
 
-const chatService = new ChatService({
-  openAIApiKey: process.env.OPENAI_API_KEY!,
-  postgresUrl: process.env.POSTGRES_URL!
-});
+const chatService = new ChatService(
+  process.env.POSTGRES_URL!,
+  process.env.OPENAI_API_KEY!
+);
 
 export async function POST(request: Request) {
-  const { id, messages } = await request.json();
+  const { id, messages, options } = await request.json();
 
   let session = await auth();
 
@@ -89,22 +89,11 @@ export async function POST(request: Request) {
       );
     }
     
-    session = { user: systemUser[0] };
+    session = { 
+      user: systemUser[0],
+      expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    };
   }
-
-  // Convert messages to LangChain format
-  const langChainMessages = messages.map((msg: { role: string; content: string }) => {
-    switch (msg.role) {
-      case 'user':
-        return new HumanMessage({ content: msg.content });
-      case 'assistant':
-        return new AIMessage({ content: msg.content });
-      case 'system':
-        return new SystemMessage({ content: msg.content });
-      default:
-        return new SystemMessage({ content: msg.content });
-    }
-  });
 
   let chat = await getChatById({ id });
 
@@ -112,7 +101,19 @@ export async function POST(request: Request) {
     const title = await generateTitleFromUserMessage({ 
       message: messages[messages.length - 1] 
     });
-     chat = await saveChat({ id, userId: session.user.id, title });
+
+    if (!session?.user?.id) {
+      throw new Error('User not authenticated');
+    }
+
+    chat = await saveChat({ 
+      userId: session.user.id, 
+      title: title || 'New Chat'
+    });
+
+    if (!chat) {
+      throw new Error('Failed to create chat');
+    }
   }
 
   const userMessageId = generateUUID();
@@ -129,253 +130,76 @@ export async function POST(request: Request) {
     ],
   });
 
-  const memory = getChatMemory(id);
-  const documentManager = DocumentManager.getInstance();
-
-  // Enhanced tools with document integration
-  // const tools = [
-  //   new DynamicStructuredTool({
-  //     name: 'searchDocuments',
-  //     description: 'Search through existing documents for relevant information',
-  //     schema: z.object({
-  //       query: z.string()
-  //     }),
-  //     func: async ({ query }: { query: string }) => {
-  //       const { documents } = await documentManager.queryDocuments(query, id);
-  //       return documents.map(doc => ({
-  //         content: doc.pageContent,
-  //         metadata: doc.metadata
-  //       }));
-  //     }
-  //   }),
-
-  //   new DynamicStructuredTool({
-  //     name: 'createDocument',
-  //     description: 'Create a document for a writing activity',
-  //     schema: z.object({
-  //       title: z.string(),
-  //       kind: z.enum(['text', 'code']),
-  //       content: z.string()
-  //     }),
-  //     func: async ({ title, kind, content }: { 
-  //       title: string;
-  //       kind: 'text' | 'code';
-  //       content: string;
-  //     }) => {
-  //       const docId = generateUUID();
-        
-  //       // Add null check for session.user
-  //       if (!session.user?.id) {
-  //         throw new Error('User not authenticated');
-  //       }
-
-  //       // Save to vector store for future retrieval
-  //       await documentManager.addDocument(content, {
-  //         id: docId,
-  //         title,
-  //         kind,
-  //         createdAt: new Date().toISOString()
-  //       });
-
-  //       // Save to database
-  //       await saveDocument({
-  //         id: docId,
-  //         title,
-  //         kind,
-  //         content,
-  //         userId: session.user.id  // Now TypeScript knows this is defined
-  //       });
-
-  //       return { id: docId, title, kind };
-  //     }
-  //   }),
-
-  //   new DynamicStructuredTool({
-  //     name: 'updateDocument',
-  //     description: 'Update an existing document',
-  //     schema: z.object({
-  //       id: z.string(),
-  //       content: z.string(),
-  //       description: z.string()
-  //     }),
-  //     func: async ({ id, content, description }: {
-  //       id: string;
-  //       content: string;
-  //       description: string;
-  //     }) => {
-  //       const document = await getDocumentById({ id });
-  //       if (!document) {
-  //         throw new Error('Document not found');
-  //       }
-
-  //       // Update vector store
-  //       await documentManager.addDocument(content, {
-  //         id,
-  //         title: document.title,
-  //         kind: document.kind,
-  //         updatedAt: new Date().toISOString()
-  //       });
-
-  //       // Ensure session.user exists before accessing id
-  //       if (!session.user) {
-  //         throw new Error('User not authenticated');
-  //       }
-
-  //       // Update database
-  //       await saveDocument({
-  //         id,
-  //         title: document.title,
-  //         kind: document.kind,
-  //         content,
-  //         userId: session.user.id
-  //       });
-
-  //       return {
-  //         id,
-  //         title: document.title,
-  //         message: `Document updated: ${description}`
-  //       };
-  //     }
-  //   }),
-  // ];
-
-  // Create streaming response
   const encoder = new TextEncoder();
-  const stream = new TransformStream();
-  const writer = stream.writable.getWriter();
-
-  // Initialize chat model with memory
-  const chatModel = new ChatOpenAI({
-    modelName: 'gpt-4o-mini',
-    streaming: true,
-    callbacks: [{
-      handleLLMNewToken(token) {
-        writer.write(encoder.encode(`data: ${JSON.stringify({
-          type: 'text-delta',
-          content: token
-        })}\n\n`));
-      }
-    }]
-  });
-
-  // Create a more sophisticated chain with memory
-  const chain = RunnableSequence.from([
-    {
-      memory: async (input) => {
-        const history = await memory.loadMemoryVariables({});
-        return [...(history.chat_history || []), new HumanMessage({ content: input.message })];
-      },
-      // tools: async () => tools,
-      systemMessage: async () => {
-        let systemMessageContent = systemPrompt;
-        
-        if (session?.user?.id) {
-          const [questions, answers] = await Promise.all([
-            getQuestionnaireQuestions(),
-            getUserQuestionnaireAnswers(session.user.id),
-          ]);
-
-          if (questions.length > 0 && Object.keys(answers).length > 0) {
-            systemMessageContent = `${systemMessageContent}\n\nUser Context:`;
-            questions.forEach(question => {
-              if (answers[question.key]) {
-                systemMessageContent += `\n- ${question.question}: ${answers[question.key]}`;
-              }
-            });
-          }
-        }
-        
-        return new SystemMessage({ content: systemMessageContent });
-      },
-      context: async (input) => {
-        const { documents, relevantQAs } = await documentManager.queryDocuments(
-          input.message,
-          id
-        );
-        
-        return {
-          documents,
-          relevantQAs,
-          contextText: documents.map(doc => doc.pageContent).join('\n\n')
-        };
-      }
-    },
-    async (input) => {
-      try {
-        const messages = [
-          input.systemMessage,
-          new SystemMessage({ 
-            content: `Relevant context:\n${input.context.contextText}\n\nRelevant previous QA:\n${
-              input.context.relevantQAs.map((qa: { question: string; answer: string }) => 
-                `Q: ${qa.question}\nA: ${qa.answer}\n`
-              ).join('\n')
-            }`
-          }),
-          ...input.memory,
-        ];
-
-        // Use generate instead of invoke to handle streaming properly
-        const response = await chatModel.generate([messages]);
-        const content = response.generations[0][0].text;
-
-        // Save to memory immediately after getting response
-        if (input.memory.length > 0) {
-          const lastMessage = input.memory[input.memory.length - 1];
-          await memory.saveContext(
-            { input: lastMessage.content },
-            { output: content }
-          );
-        }
-
-        return content;
-      } catch (error) {
-        console.error('Error in chain:', error);
-        throw error; // Re-throw to be caught by the main error handler
-      }
-    },
-    new StringOutputParser()
-  ]);
 
   try {
-    const lastMessage = messages[messages.length - 1];
-    
-    // Start the response immediately
-    writer.write(encoder.encode(`data: ${JSON.stringify({
-      type: 'start',
-      id: generateUUID(),
-      createdAt: new Date().toISOString()
-    })}\n\n`));
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          // Send initial message to indicate processing
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({
+              type: 'status',
+              content: 'Processing your request...'
+            })}\n\n`)
+          );
 
-    const response = await chain.invoke({
-      message: lastMessage.content
+          const response = await chatService.chat(
+            lastUserMessage.content,
+            {
+              maxSources: 5,
+              similarityThreshold: options?.similarityThreshold || 0.3,
+              userId: session.user?.id
+            }
+          );
+
+          // Stream the response content in smaller chunks
+          const chunkSize = 20; // Adjust this value based on your needs
+          const chunks = response.answer.match(new RegExp(`.{1,${chunkSize}}`, 'g')) || [];
+          
+          for (const chunk of chunks) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({
+                type: 'text-delta',
+                content: chunk,
+                role: 'assistant'
+              })}\n\n`)
+            );
+            
+            // Add a small delay between chunks to simulate streaming
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+
+          // Send completion with metadata
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({
+              type: 'complete',
+              id: generateUUID(),
+              content: response.answer,
+              role: 'assistant',
+              sources: response.sources,
+              accuracy: response.averageAccuracy,
+              riskLevel: response.riskLevel,
+              createdAt: new Date().toISOString()
+            })}\n\n`)
+          );
+
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        } catch (error) {
+          console.error('Error in chat processing:', error);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({
+              type: 'error',
+              error: 'Error processing chat'
+            })}\n\n`)
+          );
+        } finally {
+          controller.close();
+        }
+      }
     });
 
-    // Save response message
-    if (session.user?.id) {
-      const messageId = generateUUID();
-      await saveMessages({
-        messages: [{
-          id: messageId,
-          chatId: id,
-          role: 'assistant',
-          content: response,
-          createdAt: new Date()
-        }]
-      });
-    }
-
-    // Ensure we write the completion message
-    writer.write(encoder.encode(`data: ${JSON.stringify({
-      type: 'complete',
-      id: generateUUID(),
-      content: response,
-      createdAt: new Date().toISOString()
-    })}\n\n`));
-
-    writer.write(encoder.encode('data: [DONE]\n\n'));
-    await writer.close();
-
-    return new Response(stream.readable, {
+    return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -405,6 +229,10 @@ export async function DELETE(request: Request) {
 
   try {
     const chat = await getChatById({ id });
+
+    if (!chat) {
+      return new Response('Chat not found', { status: 404 });
+    }
 
     if (chat.userId !== session.user.id) {
       return new Response('Unauthorized', { status: 401 });

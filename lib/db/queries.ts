@@ -55,7 +55,6 @@ export async function saveChat({
   userId,
   title,
 }: {
-  id: string;
   userId: string;
   title: string;
 }) {

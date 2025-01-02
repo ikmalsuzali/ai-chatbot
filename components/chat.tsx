@@ -45,6 +45,10 @@ export function Chat({
     body: { id, modelId: selectedModelId },
     initialMessages,
     experimental_throttle: 100,
+    onResponse: (response) => {
+      // Validate that the response is coming through
+      console.log('Streaming response:', response);
+    },
     onFinish: () => {
       mutate('/api/history');
     },

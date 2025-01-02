@@ -76,6 +76,7 @@
     "orderedmap": "^2.1.1",
     "pdfjs-dist": "^3.11.174",
     "pg": "^8.11.0",
+    "pgvector": "^0.2.0",
     "postgres": "^3.4.4",
     "prosemirror-example-setup": "^1.2.3",
     "prosemirror-inputrules": "^1.4.0",
