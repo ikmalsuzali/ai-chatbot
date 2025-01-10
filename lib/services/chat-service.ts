@@ -73,6 +73,13 @@ export class ChatService {
     {context}
   `);
 
+  private readonly BASIC_RESPONSE_PROMPT = PromptTemplate.fromTemplate(`
+    Respond naturally and briefly to this basic message: {question}
+
+    Keep the response friendly but concise, and remind them that I'm an AI assistant 
+    specialized in helping with presentations and public speaking.
+  `);
+
   constructor(
     pgConfig: string,
     openAIApiKey: string,
@@ -162,9 +169,16 @@ export class ChatService {
       /what (kind of )?questions/i,
       /how does this work/i,
       /tell me about yourself/i,
-      /what should i ask/i
+      /what should i ask/i,
+      // Add patterns for basic statements/questions
+      /^(hi|hello|hey|greetings)(!|\?)?$/i,
+      /^how are you/i,
+      /^good (morning|afternoon|evening|night)/i,
+      /thank you|thanks/i,
+      /^test(ing)?(!|\?)?$/i,
+      /^ok(ay)?(!|\?)?$/i
     ];
-    return genericPatterns.some(pattern => pattern.test(query));
+    return genericPatterns.some(pattern => pattern.test(query.trim()));
   }
 
   async chat(
@@ -176,14 +190,18 @@ export class ChatService {
     } = {}
   ): Promise<ChatResponse> {
     try {
-      // 1. First check if it's a generic question
+      // 1. First check if it's a basic/generic question
       if (this.isGenericQuestion(query)) {
+        const promptTemplate = query.match(/^(hi|hello|hey|greetings|thank|test|ok)/i) 
+          ? this.BASIC_RESPONSE_PROMPT 
+          : this.GENERIC_RESPONSE_PROMPT;
+
         const answer = await RunnableSequence.from([
           {
             question: (input: { question: string; context: string }) => input.question,
             context: (input: { question: string; context: string }) => input.context,
           },
-          this.GENERIC_RESPONSE_PROMPT,
+          promptTemplate,
           this.llm,
           new StringOutputParser(),
         ]).invoke({

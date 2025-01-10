@@ -1,32 +1,14 @@
-import { ChatMessage, HumanMessage, AIMessage, SystemMessage } from '@langchain/core/messages';
-import { StringOutputParser } from '@langchain/core/output_parsers';
-import { RunnableSequence } from '@langchain/core/runnables';
-import { DynamicStructuredTool } from '@langchain/core/tools';
-import { ChatOpenAI } from '@langchain/openai';
 import { BufferMemory } from 'langchain/memory';
 import { z } from 'zod';
-import { NextRequest, NextResponse } from "next/server";
 import { ChatService } from "@/lib/services/chat-service";
 
 import { auth } from '@/app/(auth)/auth';
-import { models } from '@/lib/ai/models';
-import { DocumentManager } from '@/lib/ai/document-store';
-import {
-  codePrompt,
-  systemPrompt,
-  updateDocumentPrompt,
-} from '@/lib/ai/prompts';
+
 import {
   deleteChatById,
   getChatById,
-  getDocumentById,
   saveChat,
-  saveDocument,
   saveMessages,
-  saveSuggestions,
-  getUserQuestionnaire,
-  getQuestionnaireQuestions,
-  getUserQuestionnaireAnswers,
   getUser,
   createUser,
 } from '@/lib/db/queries';
@@ -73,6 +55,30 @@ const chatService = new ChatService(
   process.env.OPENAI_API_KEY!
 );
 
+interface ChatOptions {
+  maxSources?: number;
+  similarityThreshold?: number;
+  userId?: string;
+  context?: {
+    chatHistory: any[];
+    userMessage: any;
+    previousMessages: any[];
+  };
+}
+
+interface SaveMessageParams {
+  id: string;
+  content: unknown;
+  role: string;
+  chatId: string;
+  createdAt: Date;
+  metadata?: {
+    sources?: any[];
+    accuracy?: number;
+    riskLevel?: string;
+  };
+}
+
 export async function POST(request: Request) {
   const { id, messages, options } = await request.json();
 
@@ -118,6 +124,13 @@ export async function POST(request: Request) {
 
   const userMessageId = generateUUID();
   const lastUserMessage = messages[messages.length - 1];
+  const memory = getChatMemory(id);
+
+  // Store the message in memory
+  await memory.saveContext(
+    { input: lastUserMessage.content },
+    { output: 'placeholder' }
+  );
 
   await saveMessages({
     messages: [
@@ -138,13 +151,22 @@ export async function POST(request: Request) {
         try {
           const assistantMessageId = generateUUID();
 
+          // Get chat history from memory
+          const history = await memory.loadMemoryVariables({});
+          const chatHistory = history.chat_history || [];
+
           const response = await chatService.chat(
             lastUserMessage.content,
             {
               maxSources: 5,
               similarityThreshold: options?.similarityThreshold || 0.3,
-              userId: session.user?.id
-            }
+              userId: session?.user?.id,
+              context: {
+                chatHistory,
+                userMessage: lastUserMessage,
+                previousMessages: messages.slice(-3)
+              }
+            } as ChatOptions
           );
 
           let fullContent = '';
@@ -152,21 +174,42 @@ export async function POST(request: Request) {
           let currentIndex = 0;
           const chunkSize = 20;
           
+          // Helper function to send stream data
+          const sendChunk = (chunk: string, isComplete = false) => {
+            fullContent += chunk;
+            const streamData = {
+              id: assistantMessageId,
+              role: 'assistant',
+              content: fullContent,
+              delta: chunk,
+              metadata: {
+                sources: response.sources,
+                accuracy: response.averageAccuracy,
+                riskLevel: response.riskLevel
+              },
+              type: isComplete ? 'complete' : 'partial'
+            };
+
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify(streamData, null, 0)}\n\n`)
+            );
+          };
+          
           while (currentIndex < text.length) {
             const chunk = text.slice(currentIndex, currentIndex + chunkSize);
-            fullContent += chunk;
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({
-                id: assistantMessageId,
-                role: 'assistant',
-                content: fullContent,
-                delta: chunk
-              }, null, 0)}\n\n`)
-            );
-            
+            sendChunk(chunk);
             currentIndex += chunkSize;
             await new Promise(resolve => setTimeout(resolve, 50));
           }
+
+          // Send final chunk with complete flag
+          sendChunk('', true);
+
+          // Store the complete response in memory
+          await memory.saveContext(
+            { input: lastUserMessage.content },
+            { output: response.answer }
+          );
 
           // Save the complete message to the database
           await saveMessages({
@@ -175,20 +218,35 @@ export async function POST(request: Request) {
               content: response.answer,
               role: 'assistant',
               chatId: chat.id,
-              createdAt: new Date()
-            }]
+              createdAt: new Date(),
+              metadata: {
+                sources: response.sources,
+                accuracy: response.averageAccuracy,
+                riskLevel: response.riskLevel
+              }
+            } as SaveMessageParams]
           });
 
-          // Send the DONE message as a proper JSON object
+          // Send the DONE message
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify({ 
+              type: "done",
+              metadata: {
+                sources: response.sources,
+                accuracy: response.averageAccuracy,
+                riskLevel: response.riskLevel
+              }
+            })}\n\n`)
           );
         } catch (error) {
           console.error('Error in chat processing:', error);
+          // Send detailed error information
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({
               type: 'error',
-              error: 'Error processing chat'
+              error: error instanceof Error ? error.message : 'Unknown error occurred',
+              errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+              timestamp: new Date().toISOString()
             })}\n\n`)
           );
         } finally {
@@ -207,7 +265,19 @@ export async function POST(request: Request) {
 
   } catch (error) {
     console.error('Error in chat processing:', error);
-    return new Response('Error processing chat', { status: 500 });
+    return new Response(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+        errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+        timestamp: new Date().toISOString()
+      }), 
+      { 
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }
+    );
   }
 }
 

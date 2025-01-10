@@ -51,7 +51,6 @@ export function Chat({
         return;
       }
 
-      // Get the reader from the response body
       const reader = response.body?.getReader();
       if (!reader) {
         console.error('No reader available');
@@ -60,72 +59,93 @@ export function Chat({
 
       try {
         let accumulatedContent = '';
-        let content = ''
+        let content = '';
+        let buffer = ''; // Buffer for incomplete chunks
         
         while (true) {
           const { done, value } = await reader.read();
           
-         
-
-          // Decode the stream chunk
-          const data = new TextDecoder().decode(value);
-          console.log('Received chunk:', data);
-
-          // Parse the JSON data
-          try {
-            // Remove the "data: " prefix and parse the remaining JSON
-            const jsonString = data.replace(/^data: /, '');
-            const jsonData = JSON.parse(jsonString);
-            console.log('Parsed JSON:', jsonData);
-            if (jsonData.delta) {
-              // Accumulate the content
-              accumulatedContent += jsonData.delta;
-            }
-
-            if (jsonData.content) {
-              content = jsonData.content
-              console.log('Content parsed:', content);
-            }
-          } catch (error) {
-            console.error('Error parsing chunk:', error);
-          }
-
-          // Update the messages with the accumulated content
-          setMessages(prevMessages => {
-            const lastMessage = prevMessages[prevMessages.length - 1];
-            if (lastMessage?.role === 'assistant') {
-              // Update existing assistant message
-              return prevMessages.map((msg, i) => 
-                i === prevMessages.length - 1 
-                  ? { ...msg, content: accumulatedContent }
-                  : msg
-              );
-            } else {
-              // Create new assistant message
-              return [...prevMessages, {
-                id: `${id}-${Date.now()}`,
-                role: 'assistant',
-                content: accumulatedContent
-              }];
-            }
-          });
-
           if (done) {
             console.log('Stream complete');
-            console.log('Content:', content);
             // Set the final message with complete content
-            setMessages(prevMessages => {
-              const lastMessage = prevMessages[prevMessages.length - 1];
-              if (lastMessage?.role === 'assistant') {
-                return prevMessages.map((msg, i) => 
-                  i === prevMessages.length - 1 
-                    ? { ...msg, content: content }
-                    : msg
-                );
-              }
-              return prevMessages;
-            });
+            if (content) {
+              setMessages(prevMessages => {
+                const lastMessage = prevMessages[prevMessages.length - 1];
+                if (lastMessage?.role === 'assistant') {
+                  return prevMessages.map((msg, i) => 
+                    i === prevMessages.length - 1 
+                      ? { ...msg, content }
+                      : msg
+                  );
+                }
+                return prevMessages;
+              });
+            }
             break;
+          }
+
+          // Decode the stream chunk
+          const chunk = new TextDecoder().decode(value);
+          buffer += chunk;
+
+          // Process complete messages in buffer
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
+
+          for (const line of lines) {
+            if (line.trim() === '') continue;
+
+            try {
+              // Remove the "data: " prefix if it exists
+              const jsonStr = line.replace(/^data: /, '').trim();
+              if (!jsonStr) continue;
+
+              const jsonData = JSON.parse(jsonStr);
+              console.log('Parsed JSON:', jsonData);
+
+              if (jsonData.type === 'done') {
+                console.log('Received done signal');
+                continue;
+              }
+
+              if (jsonData.type === 'error') {
+                console.error('Error from server:', jsonData.error);
+                continue;
+              }
+
+              // Handle message content
+              if (jsonData.delta) {
+                accumulatedContent += jsonData.delta;
+              }
+
+              if (jsonData.content) {
+                content = jsonData.content;
+              }
+
+              // Update messages with accumulated content
+              setMessages(prevMessages => {
+                const lastMessage = prevMessages[prevMessages.length - 1];
+                const newContent = content || accumulatedContent;
+
+                if (lastMessage?.role === 'assistant') {
+                  return prevMessages.map((msg, i) => 
+                    i === prevMessages.length - 1 
+                      ? { ...msg, content: newContent }
+                      : msg
+                  );
+                } else {
+                  return [...prevMessages, {
+                    id: jsonData.id || `${id}-${Date.now()}`,
+                    role: 'assistant',
+                    content: newContent
+                  }];
+                }
+              });
+
+            } catch (error) {
+              console.warn('Error parsing JSON chunk:', error, '\nLine:', line);
+              continue;
+            }
           }
         }
       } catch (error) {
