@@ -13,6 +13,7 @@ import {
   serial,
   real,
   vector,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 // User and authentication tables
@@ -76,29 +77,26 @@ export const vote = pgTable(
 export type Vote = InferSelectModel<typeof vote>;
 
 // Document processing tables
-export const document = pgTable(
-  'Document',
-  {
-    id: uuid('id').primaryKey().notNull().defaultRandom(),
-    createdAt: timestamp('createdAt').notNull(),
-    title: text('title').notNull(),
-    content: text('content'),
-    kind: varchar('text', { enum: ['text', 'code'] })
-      .notNull()
-      .default('text'),
-    userId: uuid('userId')
-      .notNull()
-      .references(() => user.id),
-    urlPath: varchar('urlPath', { length: 1024 }),
-    fileType: varchar('fileType', { length: 64 }),
-    metadata: json('metadata'),
-    isActive: boolean('isActive').notNull().default(true),
-    documentGroupId: varchar('documentGroupId', { length: 256 }),
-    version: integer('version').notNull().default(1),
-    expiresAt: timestamp('expiresAt'),
-    lastAccessedAt: timestamp('lastAccessedAt'),
-  }
-);
+export const document = pgTable('Document', {
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
+  createdAt: timestamp('createdAt').notNull(),
+  title: text('title').notNull(),
+  content: text('content'),
+  kind: varchar('text', { enum: ['text', 'code'] })
+    .notNull()
+    .default('text'),
+  userId: uuid('userId')
+    .notNull()
+    .references(() => user.id),
+  urlPath: varchar('urlPath', { length: 1024 }),
+  fileType: varchar('fileType', { length: 64 }),
+  metadata: json('metadata'),
+  isActive: boolean('isActive').notNull().default(true),
+  documentGroupId: varchar('documentGroupId', { length: 256 }),
+  version: integer('version').notNull().default(1),
+  expiresAt: timestamp('expiresAt'),
+  lastAccessedAt: timestamp('lastAccessedAt'),
+});
 
 export type Document = InferSelectModel<typeof document>;
 
@@ -129,24 +127,21 @@ export const documentEmbeddings = pgTable('document_embeddings', {
 
 export type DocumentEmbedding = InferSelectModel<typeof documentEmbeddings>;
 
-export const suggestion = pgTable(
-  'Suggestion',
-  {
-    id: uuid('id').primaryKey().notNull().defaultRandom(),
-    documentId: uuid('documentId')
-      .notNull()
-      .references(() => document.id),
-    documentCreatedAt: timestamp('documentCreatedAt').notNull(),
-    originalText: text('originalText').notNull(),
-    suggestedText: text('suggestedText').notNull(),
-    description: text('description'),
-    isResolved: boolean('isResolved').notNull().default(false),
-    userId: uuid('userId')
-      .notNull()
-      .references(() => user.id),
-    createdAt: timestamp('createdAt').notNull(),
-  }
-);
+export const suggestion = pgTable('Suggestion', {
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
+  documentId: uuid('documentId')
+    .notNull()
+    .references(() => document.id),
+  documentCreatedAt: timestamp('documentCreatedAt').notNull(),
+  originalText: text('originalText').notNull(),
+  suggestedText: text('suggestedText').notNull(),
+  description: text('description'),
+  isResolved: boolean('isResolved').notNull().default(false),
+  userId: uuid('userId')
+    .notNull()
+    .references(() => user.id),
+  createdAt: timestamp('createdAt').notNull(),
+});
 
 export type Suggestion = InferSelectModel<typeof suggestion>;
 
@@ -192,3 +187,16 @@ export const chatHistory = pgTable('chat_history', {
 });
 
 export type ChatHistory = typeof chatHistory.$inferInsert;
+
+export const suggestedAction = pgTable('SuggestedAction', {
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
+  title: text('title').notNull(),
+  label: text('label').notNull(),
+  action: text('action').notNull(),
+  isActive: boolean('isActive').notNull().default(true),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+  order: integer('order').notNull(),
+});
+
+export type SuggestedAction = InferSelectModel<typeof suggestedAction>;

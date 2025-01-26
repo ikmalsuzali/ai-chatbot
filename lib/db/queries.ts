@@ -18,6 +18,7 @@ import {
   vote,
   questionnaireQuestion,
   userQuestionnaireAnswer,
+  suggestedAction,
 } from './schema';
 import { BlockKind } from '@/components/block';
 
@@ -519,4 +520,17 @@ export async function createOrRetrieveCustomer(userId: string, email: string) {
     .where(eq(user.id, userId));
 
   return customer.id;
+}
+
+export async function getSuggestedActions() {
+  try {
+    return await db
+      .select()
+      .from(suggestedAction)
+      .where(eq(suggestedAction.isActive, true))
+      .orderBy(asc(suggestedAction.order));
+  } catch (error) {
+    console.error('Failed to get suggested actions from database');
+    throw error;
+  }
 }
